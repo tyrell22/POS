@@ -44,6 +44,32 @@ const FloorPlanManager = ({ onBack }) => {
         loadActiveFloorPlan();
     }, []);
 
+    const refreshFloorPlan = async () => {
+        try {
+            setLoading(true);
+            setError('');
+
+            // Re-fetch the active floor plan and its areas
+            const response = await floorPlanAPI.getActive();
+            setFloorPlan(response.data);
+            setAreas(response.data.areas || []);
+
+            // Clear any selected items
+            setSelectedArea(null);
+            setSelectedTable(null);
+            setAddingTable(false);
+
+            console.log('Floor plan refreshed successfully');
+
+        } catch (err) {
+            console.error('Error refreshing floor plan:', err);
+            const errorMessage = err.response?.data?.error || 'Грешка при освежување на планот';
+            setError(errorMessage);
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const loadActiveFloorPlan = async () => {
         try {
             setLoading(true);
@@ -161,6 +187,10 @@ const FloorPlanManager = ({ onBack }) => {
             setShowTableEditor(false);
             setSelectedTable(null);
             setAddingTable(false);
+
+            // Refresh the entire floor plan to ensure we have the latest data
+            await refreshFloorPlan();
+
         } catch (err) {
             console.error('Error saving table:', err);
             console.error('Error response:', err.response?.data);
@@ -417,6 +447,13 @@ const FloorPlanManager = ({ onBack }) => {
                             </button>
                         </>
                     )}
+                    <button
+                        onClick={refreshFloorPlan}
+                        className="flex items-center gap-2 px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors"
+                        disabled={loading}
+                    >
+                        🔄 Освежи
+                    </button>
                     <button
                         onClick={onBack}
                         className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
