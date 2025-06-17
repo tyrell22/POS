@@ -35,9 +35,15 @@ public class AreaService {
     @Autowired
     private TableService tableService;
 
+    @Autowired
+    private DatabaseHealthService databaseHealthService;
+
     @Transactional(readOnly = true)
     public List<Area> getAllActiveAreas() {
         try {
+            if (!databaseHealthService.isDatabaseHealthy()) {
+                throw new RuntimeException("База на податоци недостапна");
+            }
             return areaRepository.findByActiveTrueOrderByNameAsc();
         } catch (DataAccessException e) {
             logger.error("Database error getting active areas", e);
@@ -48,6 +54,9 @@ public class AreaService {
     @Transactional(readOnly = true)
     public List<Area> getAreasByFloorPlan(Long floorPlanId) {
         try {
+            if (!databaseHealthService.isDatabaseHealthy()) {
+                throw new RuntimeException("База на податоци недостапна");
+            }
             return areaRepository.findByFloorPlanIdWithTables(floorPlanId);
         } catch (DataAccessException e) {
             logger.error("Database error getting areas by floor plan: {}", floorPlanId, e);
@@ -58,6 +67,9 @@ public class AreaService {
     @Transactional(readOnly = true)
     public Optional<Area> getAreaById(Long id) {
         try {
+            if (!databaseHealthService.isDatabaseHealthy()) {
+                throw new RuntimeException("База на податоци недостапна");
+            }
             return areaRepository.findByIdWithTables(id);
         } catch (DataAccessException e) {
             logger.error("Database error getting area by ID: {}", id, e);
@@ -67,6 +79,10 @@ public class AreaService {
 
     public Area createArea(Long floorPlanId, String name, String description, Area.AreaType type, String color) {
         try {
+            if (!databaseHealthService.isDatabaseHealthy()) {
+                throw new RuntimeException("База на податоци недостапна");
+            }
+
             FloorPlan floorPlan = floorPlanRepository.findById(floorPlanId)
                 .orElseThrow(() -> new RuntimeException("Планот на ресторанот не е пронајден"));
 
@@ -96,6 +112,10 @@ public class AreaService {
 
     public Area updateArea(Long id, String name, String description, Area.AreaType type, String color) {
         try {
+            if (!databaseHealthService.isDatabaseHealthy()) {
+                throw new RuntimeException("База на податоци недостапна");
+            }
+
             Area area = areaRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Областа не е пронајдена"));
 
@@ -124,6 +144,10 @@ public class AreaService {
 
     public Area updateAreaPosition(Long id, Integer x, Integer y, Integer width, Integer height) {
         try {
+            if (!databaseHealthService.isDatabaseHealthy()) {
+                throw new RuntimeException("База на податоци недостапна");
+            }
+
             Area area = areaRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Областа не е пронајдена"));
 
@@ -148,23 +172,39 @@ public class AreaService {
         try {
             logger.info("Attempting to delete area with ID: {}", id);
             
+            if (!databaseHealthService.isDatabaseHealthy()) {
+                throw new RuntimeException("База на податоци недостапна");
+            }
+            
+            if (id == null) {
+                throw new RuntimeException("ID на област е задолжително");
+            }
+            
             Area area = areaRepository.findByIdWithTables(id)
                 .orElseThrow(() -> new RuntimeException("Областа не е пронајдена"));
 
-            logger.info("Found area: {} with {} tables", area.getName(), area.getTables().size());
+            logger.info("Found area: {} with {} tables", area.getName(), 
+                area.getTables() != null ? area.getTables().size() : 0);
 
-            if (!area.getTables().isEmpty()) {
-                throw new RuntimeException("Не можете да ја избришете областа која содржи маси. Прво преместете ги масите.");
+            if (area.getTables() != null && !area.getTables().isEmpty()) {
+                throw new RuntimeException("Не можете да ја избришете областа која содржи маси. Прво преместете ги масите или користете форсирано бришење.");
             }
 
             area.setActive(false);
             areaRepository.save(area);
+            areaRepository.flush();
             
             logger.info("Successfully deleted area: {}", area.getName());
 
         } catch (DataAccessException e) {
             logger.error("Database error deleting area: {}", id, e);
-            throw new RuntimeException("Грешка при бришење на областа");
+            throw new RuntimeException("Грешка при бришење на областа: " + e.getMessage());
+        } catch (Exception e) {
+            logger.error("Unexpected error deleting area: {}", id, e);
+            if (e instanceof RuntimeException) {
+                throw e;
+            }
+            throw new RuntimeException("Неочекувана грешка: " + e.getMessage());
         }
     }
 
@@ -172,35 +212,62 @@ public class AreaService {
         try {
             logger.info("Attempting to force delete area with ID: {}", id);
             
+            if (!databaseHealthService.isDatabaseHealthy()) {
+                throw new RuntimeException("База на податоци недостапна");
+            }
+            
+            if (id == null) {
+                throw new RuntimeException("ID на област е задолжително");
+            }
+            
             Area area = areaRepository.findByIdWithTables(id)
                 .orElseThrow(() -> new RuntimeException("Областа не е пронајдена"));
 
-            logger.info("Found area: {} with {} tables", area.getName(), area.getTables().size());
+            logger.info("Found area: {} with {} tables", area.getName(), 
+                area.getTables() != null ? area.getTables().size() : 0);
 
-            // Deactivate all tables in this area first
+            // First, deactivate all tables in this area
             if (area.getTables() != null && !area.getTables().isEmpty()) {
+                logger.info("Deactivating {} tables in area", area.getTables().size());
                 for (RestaurantTable table : area.getTables()) {
                     table.setActive(false);
                     tableRepository.save(table);
                 }
-                logger.info("Deactivated {} tables in area", area.getTables().size());
+                tableRepository.flush();
+                logger.info("Deactivated all tables in area");
+                
+                // Clear the tables list to avoid constraint issues
+                area.getTables().clear();
+                areaRepository.save(area);
+                areaRepository.flush();
             }
 
             // Then deactivate the area
             area.setActive(false);
             areaRepository.save(area);
+            areaRepository.flush();
             
-            logger.info("Successfully force deleted area: {} with {} tables", area.getName(), area.getTables().size());
+            logger.info("Successfully force deleted area: {} with all its tables", area.getName());
 
         } catch (DataAccessException e) {
             logger.error("Database error force deleting area: {}", id, e);
-            throw new RuntimeException("Грешка при бришење на областа");
+            throw new RuntimeException("Грешка при бришење на областа: " + e.getMessage());
+        } catch (Exception e) {
+            logger.error("Unexpected error force deleting area: {}", id, e);
+            if (e instanceof RuntimeException) {
+                throw e;
+            }
+            throw new RuntimeException("Неочекувана грешка: " + e.getMessage());
         }
     }
 
     // Table management methods
     public Area addTableToArea(Long areaId, Integer tableNumber, Integer capacity, Integer x, Integer y) {
         try {
+            if (!databaseHealthService.isDatabaseHealthy()) {
+                throw new RuntimeException("База на податоци недостапна");
+            }
+
             Area area = areaRepository.findByIdWithTables(areaId)
                 .orElseThrow(() -> new RuntimeException("Областа не е пронајдена"));
 
@@ -214,6 +281,7 @@ public class AreaService {
             table.setShape(RestaurantTable.TableShape.RECTANGLE);
 
             tableRepository.save(table);
+            tableRepository.flush();
             
             logger.info("Added table {} to area: {}", tableNumber, area.getName());
 
@@ -227,67 +295,106 @@ public class AreaService {
 
     public Area addTableToArea(Long areaId, Map<String, Object> tableData) {
         try {
+            logger.info("Adding table to area {} with data: {}", areaId, tableData);
+            
+            if (!databaseHealthService.isDatabaseHealthy()) {
+                throw new RuntimeException("База на податоци недостапна");
+            }
+            
+            if (areaId == null) {
+                throw new RuntimeException("ID на област е задолжително");
+            }
+
             Area area = areaRepository.findByIdWithTables(areaId)
                 .orElseThrow(() -> new RuntimeException("Областа не е пронајдена"));
 
-            logger.info("Adding table to area {} with data: {}", area.getName(), tableData);
-
-            // Extract table data safely
+            // Extract and validate table data
             Integer tableNumber = extractInteger(tableData, "tableNumber");
             Integer capacity = extractInteger(tableData, "capacity");
             String shapeStr = (String) tableData.get("shape");
+            String statusStr = (String) tableData.get("status");
             Integer positionX = extractInteger(tableData, "positionX");
             Integer positionY = extractInteger(tableData, "positionY");
             Integer width = extractInteger(tableData, "width");
             Integer height = extractInteger(tableData, "height");
 
             // Validate required fields
-            if (tableNumber == null) {
-                throw new RuntimeException("Бројот на маса е задолжителен");
+            if (tableNumber == null || tableNumber <= 0) {
+                throw new RuntimeException("Бројот на маса е задолжителен и мора да биде позитивен");
             }
-            if (capacity == null) {
-                throw new RuntimeException("Капацитетот е задолжителен");
+            if (capacity == null || capacity <= 0) {
+                throw new RuntimeException("Капацитетот е задолжителен и мора да биде позитивен");
             }
 
-            // Check if table number already exists
+            // Check if table number already exists (active tables only)
             if (tableRepository.existsByTableNumberAndActiveTrue(tableNumber)) {
-                throw new RuntimeException("Масата со овој број веќе постои");
+                throw new RuntimeException("Масата со број " + tableNumber + " веќе постои");
             }
             
-            // Create new table
+            // Create new table with validated data
             RestaurantTable table = new RestaurantTable(tableNumber, capacity, area);
-            table.setPositionX(positionX != null ? positionX : 20);
-            table.setPositionY(positionY != null ? positionY : 20);
-            table.setWidth(width != null ? width : 80);
-            table.setHeight(height != null ? height : 80);
             
-            if (shapeStr != null) {
+            // Set position (relative to area)
+            table.setPositionX(positionX != null ? Math.max(0, positionX) : 20);
+            table.setPositionY(positionY != null ? Math.max(0, positionY) : 20);
+            
+            // Set size
+            table.setWidth(width != null ? Math.max(40, Math.min(width, 200)) : 80);
+            table.setHeight(height != null ? Math.max(40, Math.min(height, 200)) : 80);
+            
+            // Set shape
+            if (shapeStr != null && !shapeStr.trim().isEmpty()) {
                 try {
-                    table.setShape(RestaurantTable.TableShape.valueOf(shapeStr));
+                    table.setShape(RestaurantTable.TableShape.valueOf(shapeStr.trim().toUpperCase()));
                 } catch (IllegalArgumentException e) {
-                    logger.warn("Invalid table shape: {}, using default", shapeStr);
+                    logger.warn("Invalid table shape: {}, using default RECTANGLE", shapeStr);
                     table.setShape(RestaurantTable.TableShape.RECTANGLE);
                 }
             } else {
                 table.setShape(RestaurantTable.TableShape.RECTANGLE);
             }
-
-            RestaurantTable savedTable = tableRepository.save(table);
-            tableRepository.flush(); // Force immediate persistence
             
-            logger.info("Added and persisted table {} with ID: {} to area: {}", 
+            // Set status
+            if (statusStr != null && !statusStr.trim().isEmpty()) {
+                try {
+                    table.setStatus(RestaurantTable.TableStatus.valueOf(statusStr.trim().toUpperCase()));
+                } catch (IllegalArgumentException e) {
+                    logger.warn("Invalid table status: {}, using default AVAILABLE", statusStr);
+                    table.setStatus(RestaurantTable.TableStatus.AVAILABLE);
+                }
+            } else {
+                table.setStatus(RestaurantTable.TableStatus.AVAILABLE);
+            }
+
+            // Save the table
+            RestaurantTable savedTable = tableRepository.save(table);
+            tableRepository.flush();
+            
+            logger.info("Successfully created table {} (ID: {}) in area: {}", 
                 tableNumber, savedTable.getId(), area.getName());
 
-            // Return updated area with tables
-            return areaRepository.findByIdWithTables(areaId).orElse(area);
+            // Return the updated area with the new table
+            Area updatedArea = areaRepository.findByIdWithTables(areaId)
+                .orElse(area);
+            
+            logger.info("Returning updated area with {} tables", 
+                updatedArea.getTables() != null ? updatedArea.getTables().size() : 0);
+            
+            return updatedArea;
 
         } catch (DataAccessException e) {
             logger.error("Database error adding table to area: {}", areaId, e);
-            throw new RuntimeException("Грешка при додавање на масата");
+            throw new RuntimeException("Грешка при додавање на масата: " + e.getMessage());
+        } catch (Exception e) {
+            logger.error("Unexpected error adding table to area: {}", areaId, e);
+            if (e instanceof RuntimeException) {
+                throw e;
+            }
+            throw new RuntimeException("Неочекувана грешка при додавање на масата: " + e.getMessage());
         }
     }
 
-    // Helper method to safely extract integers
+    // Improved helper method with better error handling
     private Integer extractInteger(Map<String, Object> map, String key) {
         Object value = map.get(key);
         if (value == null) return null;
@@ -298,14 +405,14 @@ public class AreaService {
             } else if (value instanceof Number) {
                 return ((Number) value).intValue();
             } else if (value instanceof String) {
-                String str = (String) value;
-                if ("undefined".equals(str) || "null".equals(str) || str.trim().isEmpty()) {
+                String str = ((String) value).trim();
+                if (str.isEmpty() || "undefined".equals(str) || "null".equals(str)) {
                     return null;
                 }
                 return Integer.parseInt(str);
             }
         } catch (NumberFormatException e) {
-            logger.warn("Could not parse integer from value: {} for key: {}", value, key);
+            logger.warn("Could not parse integer from value: '{}' for key: '{}'", value, key);
         }
         
         return null;
@@ -313,6 +420,10 @@ public class AreaService {
 
     public void removeTableFromArea(Long areaId, Long tableId) {
         try {
+            if (!databaseHealthService.isDatabaseHealthy()) {
+                throw new RuntimeException("База на податоци недостапна");
+            }
+
             Area area = areaRepository.findByIdWithTables(areaId)
                 .orElseThrow(() -> new RuntimeException("Областа не е пронајдена"));
 
@@ -325,6 +436,7 @@ public class AreaService {
 
             table.setActive(false);
             tableRepository.save(table);
+            tableRepository.flush();
             
             logger.info("Removed table {} from area: {}", table.getTableNumber(), area.getName());
 
@@ -337,6 +449,9 @@ public class AreaService {
     @Transactional(readOnly = true)
     public Long getTableCountForArea(Long areaId) {
         try {
+            if (!databaseHealthService.isDatabaseHealthy()) {
+                return 0L;
+            }
             return tableRepository.countByAreaId(areaId);
         } catch (DataAccessException e) {
             logger.error("Database error counting tables for area: {}", areaId, e);
