@@ -1,0 +1,60 @@
+﻿{
+    "short_name": "Restaurant POS",
+        "name": "Restaurant POS System - Ресторан POS Систем",
+            "description": "Систем за точка на продажба за ресторани со управување на маси, нарачки и инвентар",
+                "icons": [
+                    {
+                        "src": "favicon.ico",
+                        "sizes": "64x64 32x32 24x24 16x16",
+                        "type": "image/x-icon"
+                    },
+                    {
+                        "src": "logo192.png",
+                        "type": "image/png",
+                        "sizes": "192x192"
+                    },
+                    {
+                        "src": "logo512.png",
+                        "type": "image/png",
+                        "sizes": "512x512"
+                    }
+                ],
+                    "start_url": ".",
+                        "display": "standalone",
+                            "theme_color": "#2563eb",
+                                "background_color": "#ffffff",
+                                    "orientation": "landscape-primary",
+                                        "scope": "/",
+                                            "lang": "mk",
+                                                "categories": ["business", "productivity", "food"],
+                                                    "screenshots": [
+                                                        {
+                                                            "src": "screenshot-wide.png",
+                                                            "sizes": "1280x720",
+                                                            "type": "image/png",
+                                                            "form_factor": "wide"
+                                                        },
+                                                        {
+                                                            "src": "screenshot-narrow.png",
+                                                            "sizes": "360x640",
+                                                            "type": "image/png",
+                                                            "form_factor": "narrow"
+                                                        }
+                                                    ],
+                                                        "shortcuts": [
+                                                            {
+                                                                "name": "Маси",
+                                                                "short_name": "Маси",
+                                                                "description": "Преглед на маси",
+                                                                "url": "/tables",
+                                                                "icons": [{ "src": "icon-tables.png", "sizes": "96x96" }]
+                                                            },
+                                                            {
+                                                                "name": "Админ",
+                                                                "short_name": "Админ",
+                                                                "description": "Админ панел",
+                                                                "url": "/admin",
+                                                                "icons": [{ "src": "icon-admin.png", "sizes": "96x96" }]
+                                                            }
+                                                        ]
+}
