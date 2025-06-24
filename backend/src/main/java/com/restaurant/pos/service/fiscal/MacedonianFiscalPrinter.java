@@ -11,6 +11,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.FileOutputStream;
 import java.io.File;
+import java.io.RandomAccessFile;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.format.DateTimeFormatter;
@@ -20,8 +21,7 @@ import java.util.Arrays;
 
 /**
  * Macedonian Fiscal Printer Implementation
- * FIXED: Support for both COM ports and LPT parallel ports
- * Based on the protocol used by Synergy PF-500 and Expert SX fiscal printers
+ * FIXED: Better Windows LPT port support with multiple connection methods
  */
 public class MacedonianFiscalPrinter {
 
@@ -50,25 +50,25 @@ public class MacedonianFiscalPrinter {
     private String portName;
     private String printerType;
     private SerialPort serialPort;
-    private OutputStream parallelPort; // FIXED: Added support for parallel port
-    private boolean isParallelPort; // FIXED: Track connection type
+    private OutputStream parallelPort;
+    private boolean isParallelPort;
     private int timeout = 5000; // 5 seconds timeout
 
     public MacedonianFiscalPrinter(String portName, String printerType) {
         this.portName = portName;
         this.printerType = printerType;
-        this.isParallelPort = portName.toUpperCase().startsWith("LPT"); // FIXED: Detect LPT ports
+        this.isParallelPort = portName.toUpperCase().startsWith("LPT");
         logger.info("Initialized Macedonian fiscal printer: {} on port {} ({})", 
             printerType, portName, isParallelPort ? "Parallel" : "Serial");
     }
 
     /**
-     * FIXED: Test connection to the fiscal printer (both serial and parallel)
+     * ENHANCED: Test connection with multiple methods for LPT ports
      */
     public boolean testConnection() {
         try {
             if (isParallelPort) {
-                return testParallelConnection();
+                return testParallelConnectionMultipleMethods();
             } else {
                 return testSerialConnection();
             }
@@ -79,41 +79,147 @@ public class MacedonianFiscalPrinter {
     }
 
     /**
-     * FIXED: Test parallel port connection
+     * ENHANCED: Try multiple methods to connect to LPT port
      */
-    private boolean testParallelConnection() {
+    private boolean testParallelConnectionMultipleMethods() {
+        logger.info("Testing parallel port {} with multiple methods", portName);
+        
+        // Method 1: Try Windows device path
+        if (testWindowsDevicePath()) {
+            logger.info("✅ Windows device path method works for {}", portName);
+            return true;
+        }
+        
+        // Method 2: Try direct file access
+        if (testDirectFileAccess()) {
+            logger.info("✅ Direct file access method works for {}", portName);
+            return true;
+        }
+        
+        // Method 3: Try PRN device (Windows printer port)
+        if (testPrnDevice()) {
+            logger.info("✅ PRN device method works for {}", portName);
+            return true;
+        }
+        
+        logger.warn("❌ All parallel port connection methods failed for {}", portName);
+        return false;
+    }
+
+    /**
+     * Method 1: Windows device path \\.\LPT1
+     */
+    private boolean testWindowsDevicePath() {
         try {
-            // Try to open the parallel port device
-            String devicePath = getParallelDevicePath(portName);
-            File device = new File(devicePath);
+            String devicePath = "\\\\.\\" + portName.toUpperCase();
+            logger.debug("Testing Windows device path: {}", devicePath);
             
+            File device = new File(devicePath);
             if (!device.exists()) {
-                logger.warn("Parallel port device {} does not exist", devicePath);
+                logger.debug("Device file {} does not exist", devicePath);
                 return false;
             }
             
-            // Try to write a simple status command
             try (FileOutputStream fos = new FileOutputStream(device)) {
-                // Send a simple status request
-                byte[] statusCmd = buildSimpleCommand(CMD_STATUS);
-                fos.write(statusCmd);
+                // Try to write a simple command
+                fos.write("TEST".getBytes());
                 fos.flush();
-                logger.info("Successfully sent test command to parallel port {}", portName);
+                logger.debug("Successfully wrote to {}", devicePath);
                 return true;
             }
         } catch (Exception e) {
-            logger.error("Error testing parallel connection to {}", portName, e);
+            logger.debug("Windows device path test failed: {}", e.getMessage());
             return false;
         }
     }
 
     /**
-     * FIXED: Test serial port connection
+     * Method 2: Direct file access
+     */
+    private boolean testDirectFileAccess() {
+        try {
+            logger.debug("Testing direct file access to {}", portName);
+            
+            try (RandomAccessFile raf = new RandomAccessFile(portName, "rw")) {
+                raf.writeBytes("TEST");
+                logger.debug("Successfully wrote to {} via RandomAccessFile", portName);
+                return true;
+            }
+        } catch (Exception e) {
+            logger.debug("Direct file access test failed: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Method 3: PRN device (Windows printer device)
+     */
+    private boolean testPrnDevice() {
+        try {
+            String prnPath = "PRN";
+            logger.debug("Testing PRN device access");
+            
+            try (FileOutputStream fos = new FileOutputStream(prnPath)) {
+                fos.write("TEST".getBytes());
+                fos.flush();
+                logger.debug("Successfully wrote to PRN device");
+                return true;
+            }
+        } catch (Exception e) {
+            logger.debug("PRN device test failed: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * ENHANCED: Open parallel connection with best available method
+     */
+    private boolean openParallelConnection() {
+        logger.info("Opening parallel connection to {}", portName);
+        
+        // Try the same methods as test, but keep the connection open
+        
+        // Method 1: Windows device path
+        try {
+            String devicePath = "\\\\.\\" + portName.toUpperCase();
+            File device = new File(devicePath);
+            if (device.exists()) {
+                parallelPort = new FileOutputStream(device);
+                logger.info("✅ Connected via Windows device path: {}", devicePath);
+                return true;
+            }
+        } catch (Exception e) {
+            logger.debug("Windows device path connection failed: {}", e.getMessage());
+        }
+        
+        // Method 2: Direct file access
+        try {
+            parallelPort = new FileOutputStream(portName);
+            logger.info("✅ Connected via direct file access: {}", portName);
+            return true;
+        } catch (Exception e) {
+            logger.debug("Direct file access connection failed: {}", e.getMessage());
+        }
+        
+        // Method 3: PRN device
+        try {
+            parallelPort = new FileOutputStream("PRN");
+            logger.info("✅ Connected via PRN device");
+            return true;
+        } catch (Exception e) {
+            logger.debug("PRN device connection failed: {}", e.getMessage());
+        }
+        
+        logger.error("❌ All parallel connection methods failed for {}", portName);
+        return false;
+    }
+
+    /**
+     * Test serial port connection
      */
     private boolean testSerialConnection() {
         try {
             if (openSerialConnection()) {
-                // Send status request
                 String response = sendSerialCommand(CMD_STATUS, "");
                 closeConnection();
                 return response != null && !response.isEmpty();
@@ -151,17 +257,17 @@ public class MacedonianFiscalPrinter {
     }
 
     /**
-     * FIXED: Print fiscal receipt via parallel port
+     * Print fiscal receipt via parallel port
      */
     private void printFiscalReceiptParallel(Order order) throws Exception {
         logger.info("Printing fiscal receipt via parallel port for order {}", order.getId());
         
         try {
             // 1. Open fiscal receipt
-            byte[] openCmd = buildFiscalCommand(CMD_OPEN_RECEIPT, "1,Касиер," + getCurrentOperatorPassword());
+            byte[] openCmd = buildFiscalCommand(CMD_OPEN_RECEIPT, "1,Касиер,1");
             parallelPort.write(openCmd);
             parallelPort.flush();
-            Thread.sleep(500); // Wait for command processing
+            Thread.sleep(500);
 
             // 2. Add items to receipt
             for (OrderItem item : order.getItems()) {
@@ -176,7 +282,7 @@ public class MacedonianFiscalPrinter {
                 byte[] saleCmd = buildFiscalCommand(CMD_SALE, saleData);
                 parallelPort.write(saleCmd);
                 parallelPort.flush();
-                Thread.sleep(200); // Wait between items
+                Thread.sleep(200);
             }
 
             // 3. Add payment
@@ -190,7 +296,7 @@ public class MacedonianFiscalPrinter {
             byte[] closeCmd = buildFiscalCommand(CMD_CLOSE_RECEIPT, "");
             parallelPort.write(closeCmd);
             parallelPort.flush();
-            Thread.sleep(1000); // Wait for receipt to finish printing
+            Thread.sleep(1000);
 
         } catch (Exception e) {
             logger.error("Error in parallel fiscal printing", e);
@@ -199,11 +305,11 @@ public class MacedonianFiscalPrinter {
     }
 
     /**
-     * FIXED: Print fiscal receipt via serial port (existing logic)
+     * Print fiscal receipt via serial port
      */
     private void printFiscalReceiptSerial(Order order) throws Exception {
         // 1. Open fiscal receipt
-        String response = sendSerialCommand(CMD_OPEN_RECEIPT, "1,Касиер," + getCurrentOperatorPassword());
+        String response = sendSerialCommand(CMD_OPEN_RECEIPT, "1,Касиер,1");
         if (!isSuccessResponse(response)) {
             throw new Exception("Failed to open fiscal receipt: " + response);
         }
@@ -239,7 +345,7 @@ public class MacedonianFiscalPrinter {
     }
 
     /**
-     * FIXED: Get list of available ports (both COM and LPT)
+     * ENHANCED: Get list of available ports with better Windows LPT detection
      */
     public List<String> getAvailablePorts() {
         List<String> ports = new ArrayList<>();
@@ -258,16 +364,23 @@ public class MacedonianFiscalPrinter {
             }
         }
 
-        // FIXED: Add LPT (parallel) ports
+        // ENHANCED: Test and add LPT ports that actually work
         for (int i = 1; i <= 3; i++) {
             String lptPort = "LPT" + i;
-            ports.add(lptPort);
             
-            // Also check if the device file exists on Windows
-            String devicePath = getParallelDevicePath(lptPort);
-            File device = new File(devicePath);
-            if (device.exists()) {
-                logger.info("Found parallel port device: {}", devicePath);
+            // Test if this LPT port is available
+            try {
+                MacedonianFiscalPrinter testPrinter = new MacedonianFiscalPrinter(lptPort, "TEST");
+                if (testPrinter.testParallelConnectionMultipleMethods()) {
+                    ports.add(lptPort + " ✅"); // Mark as working
+                    logger.info("LPT port {} is available and working", lptPort);
+                } else {
+                    ports.add(lptPort + " ❌"); // Mark as not working
+                    logger.debug("LPT port {} is not available", lptPort);
+                }
+            } catch (Exception e) {
+                ports.add(lptPort + " ❌");
+                logger.debug("LPT port {} test failed: {}", lptPort, e.getMessage());
             }
         }
 
@@ -276,7 +389,7 @@ public class MacedonianFiscalPrinter {
     }
 
     /**
-     * FIXED: Open connection to fiscal printer (both serial and parallel)
+     * Open connection (enhanced)
      */
     private boolean openConnection() {
         try {
@@ -292,29 +405,7 @@ public class MacedonianFiscalPrinter {
     }
 
     /**
-     * FIXED: Open parallel port connection
-     */
-    private boolean openParallelConnection() {
-        try {
-            String devicePath = getParallelDevicePath(portName);
-            File device = new File(devicePath);
-            
-            if (!device.exists()) {
-                logger.error("Parallel port device {} does not exist", devicePath);
-                return false;
-            }
-            
-            parallelPort = new FileOutputStream(device);
-            logger.debug("Opened parallel connection to fiscal printer on {}", portName);
-            return true;
-        } catch (Exception e) {
-            logger.error("Error opening parallel connection to fiscal printer", e);
-            return false;
-        }
-    }
-
-    /**
-     * FIXED: Open serial port connection (existing logic)
+     * Open serial connection
      */
     private boolean openSerialConnection() {
         try {
@@ -326,7 +417,7 @@ public class MacedonianFiscalPrinter {
             serialPort.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, timeout, 0);
 
             if (serialPort.openPort()) {
-                Thread.sleep(100); // Wait for port to stabilize
+                Thread.sleep(100);
                 logger.debug("Opened serial connection to fiscal printer on {}", portName);
                 return true;
             } else {
@@ -340,7 +431,7 @@ public class MacedonianFiscalPrinter {
     }
 
     /**
-     * FIXED: Close connection to fiscal printer (both serial and parallel)
+     * Close connection
      */
     private void closeConnection() {
         try {
@@ -359,105 +450,59 @@ public class MacedonianFiscalPrinter {
         }
     }
 
-    /**
-     * FIXED: Get parallel port device path for Windows
-     */
-    private String getParallelDevicePath(String portName) {
-        // On Windows, parallel ports can be accessed as \\.\LPT1, \\.\LPT2, etc.
-        if (System.getProperty("os.name").toLowerCase().contains("windows")) {
-            return "\\\\.\\" + portName.toUpperCase();
-        } else {
-            // On Linux, might be /dev/lp0, /dev/lp1, etc.
-            int portNum = Integer.parseInt(portName.substring(3)) - 1; // LPT1 -> 0
-            return "/dev/lp" + portNum;
-        }
-    }
-
-    /**
-     * FIXED: Build simple fiscal command for parallel port
-     */
-    private byte[] buildSimpleCommand(String command) {
-        String packet = command;
-        return packet.getBytes(StandardCharsets.ISO_8859_1);
-    }
-
-    /**
-     * FIXED: Build fiscal command with proper framing for parallel port
-     */
+    // ... (rest of the methods remain the same as before)
+    
     private byte[] buildFiscalCommand(String command, String data) {
         String packet = command;
         if (!data.isEmpty()) {
             packet += "," + data;
         }
         
-        // Calculate checksum
         int checksum = calculateChecksum(packet);
         String fullPacket = packet + String.format("%04X", checksum);
-
-        // Add protocol framing
         return buildPacket(fullPacket);
     }
-
-    /**
-     * Send command to fiscal printer (serial only)
-     */
+    
     private String sendSerialCommand(String command, String data) throws Exception {
         if (serialPort == null || !serialPort.isOpen()) {
             throw new Exception("Serial port is not open");
         }
 
-        // Build command packet
         String packet = command;
         if (!data.isEmpty()) {
             packet += "," + data;
         }
 
-        // Calculate checksum
         int checksum = calculateChecksum(packet);
         String fullPacket = packet + String.format("%04X", checksum);
-
-        // Add protocol framing
         byte[] commandBytes = buildPacket(fullPacket);
 
         logger.debug("Sending serial command: {}", fullPacket);
 
-        // Send command
         OutputStream outputStream = serialPort.getOutputStream();
         outputStream.write(commandBytes);
         outputStream.flush();
 
-        // Wait for response
         String response = readResponse();
         logger.debug("Received serial response: {}", response);
-
         return response;
     }
 
-    /**
-     * Build packet with protocol framing
-     */
     private byte[] buildPacket(String data) {
         List<Byte> packet = new ArrayList<>();
         packet.add(STX);
-
         for (byte b : data.getBytes(StandardCharsets.ISO_8859_1)) {
             packet.add(b);
         }
-
         packet.add(ETX);
 
-        // Convert to byte array
         byte[] result = new byte[packet.size()];
         for (int i = 0; i < packet.size(); i++) {
             result[i] = packet.get(i);
         }
-
         return result;
     }
 
-    /**
-     * Read response from fiscal printer (serial only)
-     */
     private String readResponse() throws Exception {
         InputStream inputStream = serialPort.getInputStream();
         List<Byte> responseBytes = new ArrayList<>();
@@ -483,7 +528,6 @@ public class MacedonianFiscalPrinter {
                     responseBytes.add((byte) byteRead);
                 }
             }
-
             Thread.sleep(10);
         }
 
@@ -491,18 +535,13 @@ public class MacedonianFiscalPrinter {
             throw new Exception("No response received from fiscal printer");
         }
 
-        // Convert to string
         byte[] responseArray = new byte[responseBytes.size()];
         for (int i = 0; i < responseBytes.size(); i++) {
             responseArray[i] = responseBytes.get(i);
         }
-
         return new String(responseArray, StandardCharsets.ISO_8859_1);
     }
 
-    /**
-     * Calculate checksum for command
-     */
     private int calculateChecksum(String data) {
         int sum = 0;
         for (byte b : data.getBytes(StandardCharsets.ISO_8859_1)) {
@@ -511,75 +550,47 @@ public class MacedonianFiscalPrinter {
         return sum & 0xFFFF;
     }
 
-    /**
-     * Check if response indicates success
-     */
     private boolean isSuccessResponse(String response) {
         if (response == null || response.isEmpty()) {
             return false;
         }
 
-        // Parse response status
-        // Format is usually: command,status,data
         String[] parts = response.split(",");
         if (parts.length >= 2) {
             try {
                 int status = Integer.parseInt(parts[1]);
-                return status == 0; // 0 means success
+                return status == 0;
             } catch (NumberFormatException e) {
                 return false;
             }
         }
-
         return false;
     }
 
-    /**
-     * Determine tax group for menu item based on order type
-     * Takeout orders: 5% VAT (Tax Group B)
-     * Dine-in orders: 18% VAT (Tax Group A)
-     */
     private String determineTaxGroup(com.restaurant.pos.entity.MenuItem menuItem, Order order) {
-        // Check if this is a takeout order (table numbers 1000+ are takeout)
         boolean isTakeout = order.getTableNumber() >= 1000;
 
         if (isTakeout) {
-            // Takeout orders use 5% VAT (Tax Group B) for all items
             logger.debug("Applying 5% VAT (Tax Group B) for takeout order - Table: {}, Item: {}",
                 order.getTableNumber(), menuItem.getName());
             return TAX_GROUP_B;
         } else {
-            // Dine-in orders use 18% VAT (Tax Group A) for all items
             logger.debug("Applying 18% VAT (Tax Group A) for dine-in order - Table: {}, Item: {}",
                 order.getTableNumber(), menuItem.getName());
             return TAX_GROUP_A;
         }
     }
 
-    /**
-     * Sanitize text for fiscal printer
-     */
     private String sanitizeText(String text) {
         if (text == null) {
             return "";
         }
 
-        // Remove special characters that might cause issues
         String sanitized = text.replaceAll("[^\\p{L}\\p{N}\\s\\-\\.]", "");
 
-        // Limit length to what fiscal printer can handle
         if (sanitized.length() > 30) {
             sanitized = sanitized.substring(0, 30);
         }
-
         return sanitized;
-    }
-
-    /**
-     * Get current operator password (configurable)
-     */
-    private String getCurrentOperatorPassword() {
-        // This should be configurable - using default for now
-        return "1";
     }
 }
