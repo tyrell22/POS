@@ -24,6 +24,7 @@ import java.nio.charset.Charset;
 /**
  * Epson Thermal Printer Implementation using ESC/POS commands
  * FIXED: Proper encoding for Macedonian text and only print new items
+ * FIXED: Compilation errors with ESC/POS library
  */
 public class EpsonThermalPrinter {
     
@@ -34,9 +35,9 @@ public class EpsonThermalPrinter {
     private String ipAddress;
     private int port;
     
-    // FIXED: Use Windows-1251 (Cyrillic) encoding for Macedonian text
-    private static final String ENCODING = "windows-1251"; // Better for Cyrillic
-    private static final Charset CHARSET = Charset.forName("windows-1251");
+    // FIXED: Use CP852 encoding for better Macedonian character support
+    private static final String ENCODING = "CP852"; // Central European encoding
+    private static final Charset CHARSET = Charset.forName("CP852");
     
     public EpsonThermalPrinter(String printerName, String connectionType, String ipAddress, int port) {
         this.printerName = printerName;
@@ -90,8 +91,13 @@ public class EpsonThermalPrinter {
         }
         
         try {
-            // FIXED: Send codepage command for Cyrillic
-            escpos.write(new byte[]{0x1B, 0x74, 0x11}); // ESC t 17 (CP1251)
+            // FIXED: Send codepage command properly using raw output stream
+            OutputStream rawStream = escpos.getOutputStream();
+            if (rawStream != null) {
+                // ESC t 6 for CP852 codepage
+                rawStream.write(new byte[]{0x1B, 0x74, 0x06});
+                rawStream.flush();
+            }
             
             // Header
             printCenteredText(escpos, "========== КУЈНА ==========", true);
@@ -108,10 +114,8 @@ public class EpsonThermalPrinter {
             for (OrderItem item : newItems) {
                 int pendingQty = item.getQuantity() - (item.getSentQuantity() != null ? item.getSentQuantity() : 0);
                 
-                // Large quantity
-                printLeftText(escpos, pendingQty + "x ", true, true); // Bold and large
-                // Item name on same line
-                printLeftText(escpos, cleanMacedonianText(item.getMenuItem().getName()), true, false);
+                // Large quantity and item name
+                printLeftText(escpos, pendingQty + "x " + cleanMacedonianText(item.getMenuItem().getName()), true);
                 escpos.feed(1);
                 
                 if (item.getNotes() != null && !item.getNotes().trim().isEmpty()) {
@@ -159,8 +163,13 @@ public class EpsonThermalPrinter {
         }
         
         try {
-            // FIXED: Send codepage command for Cyrillic
-            escpos.write(new byte[]{0x1B, 0x74, 0x11}); // ESC t 17 (CP1251)
+            // FIXED: Send codepage command properly using raw output stream
+            OutputStream rawStream = escpos.getOutputStream();
+            if (rawStream != null) {
+                // ESC t 6 for CP852 codepage
+                rawStream.write(new byte[]{0x1B, 0x74, 0x06});
+                rawStream.flush();
+            }
             
             // Header
             printCenteredText(escpos, "=========== БАР ===========", true);
@@ -177,10 +186,8 @@ public class EpsonThermalPrinter {
             for (OrderItem item : newItems) {
                 int pendingQty = item.getQuantity() - (item.getSentQuantity() != null ? item.getSentQuantity() : 0);
                 
-                // Large quantity
-                printLeftText(escpos, pendingQty + "x ", true, true); // Bold and large
-                // Item name on same line
-                printLeftText(escpos, cleanMacedonianText(item.getMenuItem().getName()), true, false);
+                // Large quantity and item name
+                printLeftText(escpos, pendingQty + "x " + cleanMacedonianText(item.getMenuItem().getName()), true);
                 escpos.feed(1);
                 
                 if (item.getNotes() != null && !item.getNotes().trim().isEmpty()) {
@@ -213,8 +220,13 @@ public class EpsonThermalPrinter {
         }
         
         try {
-            // FIXED: Send codepage command for Cyrillic
-            escpos.write(new byte[]{0x1B, 0x74, 0x11}); // ESC t 17 (CP1251)
+            // FIXED: Send codepage command properly using raw output stream
+            OutputStream rawStream = escpos.getOutputStream();
+            if (rawStream != null) {
+                // ESC t 6 for CP852 codepage
+                rawStream.write(new byte[]{0x1B, 0x74, 0x06});
+                rawStream.flush();
+            }
             
             // Restaurant header
             printCenteredText(escpos, "РЕСТОРАН POS", true, true); // Large and bold
@@ -280,16 +292,16 @@ public class EpsonThermalPrinter {
     private String cleanMacedonianText(String text) {
         if (text == null) return "";
         
-        // Convert common Macedonian characters that might not print correctly
+        // Convert problematic Macedonian characters to CP852 compatible ones
         String cleaned = text
-            .replace("ќ", "k'")  // If ќ doesn't work
+            .replace("ќ", "k'")  // If ќ doesn't work in CP852
             .replace("Ќ", "K'")
-            .replace("ѕ", "z'")  // If ѕ doesn't work  
+            .replace("ѕ", "z'")  // If ѕ doesn't work in CP852
             .replace("Ѕ", "Z'")
-            .replace("џ", "dz")  // If џ doesn't work
+            .replace("џ", "dz")  // If џ doesn't work in CP852
             .replace("Џ", "DZ");
         
-        // Remove any remaining non-printable characters
+        // Remove any remaining control characters
         cleaned = cleaned.replaceAll("[\\p{Cntrl}&&[^\r\n\t]]", "");
         
         return cleaned;
@@ -309,9 +321,9 @@ public class EpsonThermalPrinter {
         if (bold) style = style.setBold(true);
         if (large) style = style.setFontSize(Style.FontSize._2, Style.FontSize._2);
         
-        // Convert text to proper encoding
-        byte[] textBytes = cleanMacedonianText(text).getBytes(CHARSET);
-        escpos.write(style, new String(textBytes, CHARSET));
+        // FIXED: Use string directly with proper encoding
+        String cleanText = cleanMacedonianText(text);
+        escpos.write(style, cleanText);
     }
     
     private void printLeftText(EscPos escpos, String text, boolean bold) throws IOException {
@@ -325,9 +337,9 @@ public class EpsonThermalPrinter {
         if (bold) style = style.setBold(true);
         if (large) style = style.setFontSize(Style.FontSize._2, Style.FontSize._2);
         
-        // Convert text to proper encoding
-        byte[] textBytes = cleanMacedonianText(text).getBytes(CHARSET);
-        escpos.write(style, new String(textBytes, CHARSET));
+        // FIXED: Use string directly with proper encoding
+        String cleanText = cleanMacedonianText(text);
+        escpos.write(style, cleanText);
     }
     
     private void printRightText(EscPos escpos, String text, boolean bold) throws IOException {
@@ -336,9 +348,9 @@ public class EpsonThermalPrinter {
         
         if (bold) style = style.setBold(true);
         
-        // Convert text to proper encoding
-        byte[] textBytes = cleanMacedonianText(text).getBytes(CHARSET);
-        escpos.write(style, new String(textBytes, CHARSET));
+        // FIXED: Use string directly with proper encoding
+        String cleanText = cleanMacedonianText(text);
+        escpos.write(style, cleanText);
     }
     
     /**
