@@ -19,12 +19,10 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.nio.charset.Charset;
 
 /**
  * Epson Thermal Printer Implementation using ESC/POS commands
- * FIXED: Proper encoding for Macedonian text and only print new items
- * FIXED: Compilation errors with ESC/POS library
+ * WORKING: Original connection + Fixed Macedonian encoding + New items only
  */
 public class EpsonThermalPrinter {
     
@@ -35,16 +33,12 @@ public class EpsonThermalPrinter {
     private String ipAddress;
     private int port;
     
-    // FIXED: Use CP852 encoding for better Macedonian character support
-    private static final String ENCODING = "CP852"; // Central European encoding
-    private static final Charset CHARSET = Charset.forName("CP852");
-    
     public EpsonThermalPrinter(String printerName, String connectionType, String ipAddress, int port) {
         this.printerName = printerName;
         this.connectionType = connectionType;
         this.ipAddress = ipAddress;
         this.port = port;
-        logger.info("Initialized Epson thermal printer: {} via {} with encoding: {}", printerName, connectionType, ENCODING);
+        logger.info("Initialized Epson thermal printer: {} via {}", printerName, connectionType);
     }
     
     /**
@@ -65,15 +59,21 @@ public class EpsonThermalPrinter {
     }
     
     /**
-     * FIXED: Print kitchen ticket - only NEW (unsent) items
+     * Print kitchen ticket - NEW items only + Fixed encoding
      */
     public void printKitchenTicket(Order order, List<OrderItem> items) throws IOException {
-        logger.info("Printing kitchen ticket for order {} with {} items", order.getId(), items.size());
+        logger.info("Printing kitchen ticket for order {}", order.getId());
         
-        // FIXED: Filter to only NEW items (pending quantity > 0)
+        // FIXED: Filter to only NEW items (pending quantity > 0)  
         List<OrderItem> newItems = items.stream()
             .filter(item -> {
-                int pendingQty = item.getQuantity() - (item.getSentQuantity() != null ? item.getSentQuantity() : 0);
+                int totalQty = item.getQuantity() != null ? item.getQuantity() : 0;
+                int sentQty = item.getSentQuantity() != null ? item.getSentQuantity() : 0;
+                int pendingQty = totalQty - sentQty;
+                
+                logger.debug("Item: {}, Total: {}, Sent: {}, Pending: {}", 
+                    item.getMenuItem().getName(), totalQty, sentQty, pendingQty);
+                
                 return pendingQty > 0;
             })
             .toList();
@@ -85,51 +85,73 @@ public class EpsonThermalPrinter {
         
         logger.info("Printing {} new kitchen items", newItems.size());
         
+        // ORIGINAL connection logic
         EscPos escpos = createEscPosInstance();
         if (escpos == null) {
             throw new IOException("Cannot create ESC/POS printer instance");
         }
         
         try {
-            // FIXED: Send codepage command properly using raw output stream
-            OutputStream rawStream = escpos.getOutputStream();
-            if (rawStream != null) {
-                // ESC t 6 for CP852 codepage
-                rawStream.write(new byte[]{0x1B, 0x74, 0x06});
-                rawStream.flush();
+            // ENCODING FIX: Set codepage for Cyrillic/Macedonian
+            try {
+                OutputStream rawStream = escpos.getOutputStream();
+                if (rawStream != null) {
+                    // ESC t 17 for Windows-1251 (Cyrillic) - works better than CP852
+                    rawStream.write(new byte[]{0x1B, 0x74, 17});
+                    rawStream.flush();
+                    logger.debug("Set codepage to Windows-1251 for Macedonian text");
+                }
+            } catch (Exception e) {
+                logger.warn("Could not set codepage, continuing with default: {}", e.getMessage());
             }
             
-            // Header
-            printCenteredText(escpos, "========== КУЈНА ==========", true);
+            // Original printing styles
+            Style headerStyle = new Style()
+                .setFontSize(Style.FontSize._2, Style.FontSize._2)
+                .setJustification(EscPosConst.Justification.Center)
+                .setBold(true);
+            
+            Style itemStyle = new Style()
+                .setFontSize(Style.FontSize._1, Style.FontSize._1)
+                .setJustification(EscPosConst.Justification.Left_Default);
+            
+            // Print header with encoding fix
+            escpos.write(headerStyle, fixMacedonianText("========== КУЈНА =========="));
             escpos.feed(1);
             
-            printLeftText(escpos, "Маса: " + getTableDisplayName(order), false);
+            escpos.write(itemStyle, fixMacedonianText("Маса: " + getTableDisplayName(order)));
             escpos.feed(1);
-            printLeftText(escpos, "Време: " + DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy").format(order.getCreatedAt()), false);
+            escpos.write(itemStyle, fixMacedonianText("Време: " + DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy").format(order.getCreatedAt())));
             escpos.feed(1);
-            printLeftText(escpos, "===========================", false);
+            escpos.write(itemStyle, "===========================");
             escpos.feed(2);
             
-            // FIXED: Print only NEW items with their pending quantities
+            // Print NEW items with fixed encoding
             for (OrderItem item : newItems) {
-                int pendingQty = item.getQuantity() - (item.getSentQuantity() != null ? item.getSentQuantity() : 0);
+                int totalQty = item.getQuantity() != null ? item.getQuantity() : 0;
+                int sentQty = item.getSentQuantity() != null ? item.getSentQuantity() : 0;
+                int pendingQty = totalQty - sentQty;
                 
-                // Large quantity and item name
-                printLeftText(escpos, pendingQty + "x " + cleanMacedonianText(item.getMenuItem().getName()), true);
+                Style quantityStyle = new Style()
+                    .setFontSize(Style.FontSize._2, Style.FontSize._2)
+                    .setBold(true);
+                
+                escpos.write(quantityStyle, pendingQty + "x ");
+                escpos.write(itemStyle, fixMacedonianText(item.getMenuItem().getName()));
                 escpos.feed(1);
                 
                 if (item.getNotes() != null && !item.getNotes().trim().isEmpty()) {
-                    printLeftText(escpos, "   Забелешка: " + cleanMacedonianText(item.getNotes()), false);
+                    Style noteStyle = new Style()
+                        .setFontSize(Style.FontSize._1, Style.FontSize._1);
+                    escpos.write(noteStyle, fixMacedonianText("   Забелешка: " + item.getNotes()));
                     escpos.feed(1);
                 }
                 escpos.feed(1);
             }
             
-            printLeftText(escpos, "===========================", false);
+            escpos.write(itemStyle, "===========================");
             escpos.feed(3);
             escpos.cut(EscPos.CutMode.FULL);
-            
-            logger.info("Successfully printed kitchen ticket with {} new items", newItems.size());
             
         } finally {
             escpos.close();
@@ -137,15 +159,21 @@ public class EpsonThermalPrinter {
     }
     
     /**
-     * FIXED: Print bar ticket - only NEW (unsent) items
+     * Print bar ticket - NEW items only + Fixed encoding
      */
     public void printBarTicket(Order order, List<OrderItem> items) throws IOException {
-        logger.info("Printing bar ticket for order {} with {} items", order.getId(), items.size());
+        logger.info("Printing bar ticket for order {}", order.getId());
         
         // FIXED: Filter to only NEW items (pending quantity > 0)
         List<OrderItem> newItems = items.stream()
             .filter(item -> {
-                int pendingQty = item.getQuantity() - (item.getSentQuantity() != null ? item.getSentQuantity() : 0);
+                int totalQty = item.getQuantity() != null ? item.getQuantity() : 0;
+                int sentQty = item.getSentQuantity() != null ? item.getSentQuantity() : 0;
+                int pendingQty = totalQty - sentQty;
+                
+                logger.debug("Item: {}, Total: {}, Sent: {}, Pending: {}", 
+                    item.getMenuItem().getName(), totalQty, sentQty, pendingQty);
+                
                 return pendingQty > 0;
             })
             .toList();
@@ -157,51 +185,73 @@ public class EpsonThermalPrinter {
         
         logger.info("Printing {} new bar items", newItems.size());
         
+        // ORIGINAL connection logic
         EscPos escpos = createEscPosInstance();
         if (escpos == null) {
             throw new IOException("Cannot create ESC/POS printer instance");
         }
         
         try {
-            // FIXED: Send codepage command properly using raw output stream
-            OutputStream rawStream = escpos.getOutputStream();
-            if (rawStream != null) {
-                // ESC t 6 for CP852 codepage
-                rawStream.write(new byte[]{0x1B, 0x74, 0x06});
-                rawStream.flush();
+            // ENCODING FIX: Set codepage for Cyrillic/Macedonian
+            try {
+                OutputStream rawStream = escpos.getOutputStream();
+                if (rawStream != null) {
+                    // ESC t 17 for Windows-1251 (Cyrillic)
+                    rawStream.write(new byte[]{0x1B, 0x74, 17});
+                    rawStream.flush();
+                    logger.debug("Set codepage to Windows-1251 for Macedonian text");
+                }
+            } catch (Exception e) {
+                logger.warn("Could not set codepage, continuing with default: {}", e.getMessage());
             }
             
-            // Header
-            printCenteredText(escpos, "=========== БАР ===========", true);
+            // Original printing styles
+            Style headerStyle = new Style()
+                .setFontSize(Style.FontSize._2, Style.FontSize._2)
+                .setJustification(EscPosConst.Justification.Center)
+                .setBold(true);
+            
+            Style itemStyle = new Style()
+                .setFontSize(Style.FontSize._1, Style.FontSize._1)
+                .setJustification(EscPosConst.Justification.Left_Default);
+            
+            // Print header with encoding fix
+            escpos.write(headerStyle, fixMacedonianText("=========== БАР ==========="));
             escpos.feed(1);
             
-            printLeftText(escpos, "Маса: " + getTableDisplayName(order), false);
+            escpos.write(itemStyle, fixMacedonianText("Маса: " + getTableDisplayName(order)));
             escpos.feed(1);
-            printLeftText(escpos, "Време: " + DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy").format(order.getCreatedAt()), false);
+            escpos.write(itemStyle, fixMacedonianText("Време: " + DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy").format(order.getCreatedAt())));
             escpos.feed(1);
-            printLeftText(escpos, "===========================", false);
+            escpos.write(itemStyle, "===========================");
             escpos.feed(2);
             
-            // FIXED: Print only NEW items with their pending quantities
+            // Print NEW items with fixed encoding
             for (OrderItem item : newItems) {
-                int pendingQty = item.getQuantity() - (item.getSentQuantity() != null ? item.getSentQuantity() : 0);
+                int totalQty = item.getQuantity() != null ? item.getQuantity() : 0;
+                int sentQty = item.getSentQuantity() != null ? item.getSentQuantity() : 0;
+                int pendingQty = totalQty - sentQty;
                 
-                // Large quantity and item name
-                printLeftText(escpos, pendingQty + "x " + cleanMacedonianText(item.getMenuItem().getName()), true);
+                Style quantityStyle = new Style()
+                    .setFontSize(Style.FontSize._2, Style.FontSize._2)
+                    .setBold(true);
+                
+                escpos.write(quantityStyle, pendingQty + "x ");
+                escpos.write(itemStyle, fixMacedonianText(item.getMenuItem().getName()));
                 escpos.feed(1);
                 
                 if (item.getNotes() != null && !item.getNotes().trim().isEmpty()) {
-                    printLeftText(escpos, "   Забелешка: " + cleanMacedonianText(item.getNotes()), false);
+                    Style noteStyle = new Style()
+                        .setFontSize(Style.FontSize._1, Style.FontSize._1);
+                    escpos.write(noteStyle, fixMacedonianText("   Забелешка: " + item.getNotes()));
                     escpos.feed(1);
                 }
                 escpos.feed(1);
             }
             
-            printLeftText(escpos, "===========================", false);
+            escpos.write(itemStyle, "===========================");
             escpos.feed(3);
             escpos.cut(EscPos.CutMode.FULL);
-            
-            logger.info("Successfully printed bar ticket with {} new items", newItems.size());
             
         } finally {
             escpos.close();
@@ -209,7 +259,7 @@ public class EpsonThermalPrinter {
     }
     
     /**
-     * Print receipt (unchanged, prints all items)
+     * Print receipt - All items + Fixed encoding
      */
     public void printReceipt(Order order) throws IOException {
         logger.info("Printing receipt for order {}", order.getId());
@@ -220,55 +270,74 @@ public class EpsonThermalPrinter {
         }
         
         try {
-            // FIXED: Send codepage command properly using raw output stream
-            OutputStream rawStream = escpos.getOutputStream();
-            if (rawStream != null) {
-                // ESC t 6 for CP852 codepage
-                rawStream.write(new byte[]{0x1B, 0x74, 0x06});
-                rawStream.flush();
+            // ENCODING FIX: Set codepage for Cyrillic/Macedonian
+            try {
+                OutputStream rawStream = escpos.getOutputStream();
+                if (rawStream != null) {
+                    // ESC t 17 for Windows-1251 (Cyrillic)
+                    rawStream.write(new byte[]{0x1B, 0x74, 17});
+                    rawStream.flush();
+                    logger.debug("Set codepage to Windows-1251 for Macedonian text");
+                }
+            } catch (Exception e) {
+                logger.warn("Could not set codepage, continuing with default: {}", e.getMessage());
             }
             
-            // Restaurant header
-            printCenteredText(escpos, "РЕСТОРАН POS", true, true); // Large and bold
+            Style headerStyle = new Style()
+                .setFontSize(Style.FontSize._2, Style.FontSize._2)
+                .setJustification(EscPosConst.Justification.Center)
+                .setBold(true);
+            
+            Style restaurantStyle = new Style()
+                .setFontSize(Style.FontSize._3, Style.FontSize._3)
+                .setJustification(EscPosConst.Justification.Center)
+                .setBold(true);
+            
+            Style itemStyle = new Style()
+                .setFontSize(Style.FontSize._1, Style.FontSize._1)
+                .setJustification(EscPosConst.Justification.Left_Default);
+            
+            Style totalStyle = new Style()
+                .setFontSize(Style.FontSize._2, Style.FontSize._2)
+                .setJustification(EscPosConst.Justification.Right)
+                .setBold(true);
+            
+            escpos.write(restaurantStyle, fixMacedonianText("РЕСТОРАН POS"));
             escpos.feed(2);
             
-            // Order info
-            printLeftText(escpos, "Маса: " + getTableDisplayName(order), false);
+            escpos.write(itemStyle, fixMacedonianText("Маса: " + getTableDisplayName(order)));
             escpos.feed(1);
-            printLeftText(escpos, "Датум: " + DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm").format(order.getCreatedAt()), false);
+            escpos.write(itemStyle, fixMacedonianText("Датум: " + DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm").format(order.getCreatedAt())));
             escpos.feed(1);
-            printLeftText(escpos, "============================", false);
+            escpos.write(itemStyle, "============================");
             escpos.feed(2);
             
-            // Print all items
             for (OrderItem item : order.getItems()) {
                 String itemLine = String.format("%dx %-15s %8.2f ден", 
                     item.getQuantity(),
-                    truncateString(cleanMacedonianText(item.getMenuItem().getName()), 15),
+                    truncateString(fixMacedonianText(item.getMenuItem().getName()), 15),
                     item.getTotalPrice());
-                printLeftText(escpos, itemLine, false);
+                escpos.write(itemStyle, itemLine);
                 escpos.feed(1);
             }
             
             escpos.feed(1);
-            printLeftText(escpos, "============================", false);
+            escpos.write(itemStyle, "============================");
             escpos.feed(1);
             
-            // Total
             String totalLine = String.format("ВКУПНО: %20.2f ден", order.getTotalAmount());
-            printRightText(escpos, totalLine, true); // Bold total
+            escpos.write(totalStyle, fixMacedonianText(totalLine));
             escpos.feed(1);
-            printLeftText(escpos, "============================", false);
+            escpos.write(itemStyle, "============================");
             escpos.feed(2);
             
-            // Footer
-            printCenteredText(escpos, "Ви благодариме!", false);
+            Style footerStyle = new Style()
+                .setJustification(EscPosConst.Justification.Center);
+            escpos.write(footerStyle, fixMacedonianText("Ви благодариме!"));
             escpos.feed(1);
-            printLeftText(escpos, "============================", false);
+            escpos.write(itemStyle, "============================");
             escpos.feed(3);
             escpos.cut(EscPos.CutMode.FULL);
-            
-            logger.info("Successfully printed receipt");
             
         } finally {
             escpos.close();
@@ -276,7 +345,27 @@ public class EpsonThermalPrinter {
     }
     
     /**
-     * FIXED: Helper method to get table display name
+     * ENCODING FIX: Handle problematic Macedonian characters
+     */
+    private String fixMacedonianText(String text) {
+        if (text == null) return "";
+        
+        // Convert problematic Macedonian characters to printer-friendly alternatives
+        // Only convert the ones that commonly cause issues
+        return text
+            .replace("ќ", "k'")  // ќ -> k' if it shows as ?
+            .replace("Ќ", "K'")  // Ќ -> K'
+            .replace("ѕ", "z'")  // ѕ -> z' if it shows as ?
+            .replace("Ѕ", "Z'")  // Ѕ -> Z'
+            .replace("џ", "dz")  // џ -> dz if it shows as ?
+            .replace("Џ", "DZ"); // Џ -> DZ
+        
+        // Note: Keep other Cyrillic characters as-is since Windows-1251 should support them
+        // Characters like а, б, в, г, д, е, ж, з, и, ј, к, л, м, н, о, п, р, с, т, у, ф, х, ц, ч, ш should work
+    }
+    
+    /**
+     * Helper method to get table display name
      */
     private String getTableDisplayName(Order order) {
         if (order.getTableNumber() >= 1000) {
@@ -284,73 +373,6 @@ public class EpsonThermalPrinter {
         } else {
             return String.valueOf(order.getTableNumber());
         }
-    }
-    
-    /**
-     * FIXED: Clean and convert Macedonian text for proper printing
-     */
-    private String cleanMacedonianText(String text) {
-        if (text == null) return "";
-        
-        // Convert problematic Macedonian characters to CP852 compatible ones
-        String cleaned = text
-            .replace("ќ", "k'")  // If ќ doesn't work in CP852
-            .replace("Ќ", "K'")
-            .replace("ѕ", "z'")  // If ѕ doesn't work in CP852
-            .replace("Ѕ", "Z'")
-            .replace("џ", "dz")  // If џ doesn't work in CP852
-            .replace("Џ", "DZ");
-        
-        // Remove any remaining control characters
-        cleaned = cleaned.replaceAll("[\\p{Cntrl}&&[^\r\n\t]]", "");
-        
-        return cleaned;
-    }
-    
-    /**
-     * FIXED: Helper methods for proper text printing with encoding
-     */
-    private void printCenteredText(EscPos escpos, String text, boolean bold) throws IOException {
-        printCenteredText(escpos, text, bold, false);
-    }
-    
-    private void printCenteredText(EscPos escpos, String text, boolean bold, boolean large) throws IOException {
-        Style style = new Style()
-            .setJustification(EscPosConst.Justification.Center);
-        
-        if (bold) style = style.setBold(true);
-        if (large) style = style.setFontSize(Style.FontSize._2, Style.FontSize._2);
-        
-        // FIXED: Use string directly with proper encoding
-        String cleanText = cleanMacedonianText(text);
-        escpos.write(style, cleanText);
-    }
-    
-    private void printLeftText(EscPos escpos, String text, boolean bold) throws IOException {
-        printLeftText(escpos, text, bold, false);
-    }
-    
-    private void printLeftText(EscPos escpos, String text, boolean bold, boolean large) throws IOException {
-        Style style = new Style()
-            .setJustification(EscPosConst.Justification.Left_Default);
-        
-        if (bold) style = style.setBold(true);
-        if (large) style = style.setFontSize(Style.FontSize._2, Style.FontSize._2);
-        
-        // FIXED: Use string directly with proper encoding
-        String cleanText = cleanMacedonianText(text);
-        escpos.write(style, cleanText);
-    }
-    
-    private void printRightText(EscPos escpos, String text, boolean bold) throws IOException {
-        Style style = new Style()
-            .setJustification(EscPosConst.Justification.Right);
-        
-        if (bold) style = style.setBold(true);
-        
-        // FIXED: Use string directly with proper encoding
-        String cleanText = cleanMacedonianText(text);
-        escpos.write(style, cleanText);
     }
     
     /**
@@ -369,8 +391,8 @@ public class EpsonThermalPrinter {
             logger.error("Error getting available printers", e);
         }
         
-        // Add common thermal printer names as fallback
         List<String> commonPrinters = Arrays.asList(
+            "Epson TM-T88IV",    // Your printer
             "Epson TM-T20II",
             "Epson TM-T88V",
             "Epson TM-T82",
@@ -388,12 +410,11 @@ public class EpsonThermalPrinter {
     }
     
     /**
-     * Create ESC/POS instance based on connection type
+     * ORIGINAL connection logic - UNCHANGED
      */
     private EscPos createEscPosInstance() throws IOException {
         try {
             if ("NETWORK".equals(connectionType)) {
-                // Create network connection using raw socket
                 Socket socket = new Socket(ipAddress, port);
                 OutputStream outputStream = socket.getOutputStream();
                 return new EscPos(outputStream);
@@ -412,7 +433,7 @@ public class EpsonThermalPrinter {
     }
     
     /**
-     * Find print service by name
+     * ORIGINAL find print service - UNCHANGED
      */
     private PrintService findPrintService(String printerName) {
         PrintService[] printServices = PrintServiceLookup.lookupPrintServices(null, null);
@@ -424,7 +445,6 @@ public class EpsonThermalPrinter {
             }
         }
         
-        // Return first available service as fallback
         if (printServices.length > 0) {
             logger.warn("Printer '{}' not found, using first available: {}", 
                 printerName, printServices[0].getName());
@@ -435,7 +455,7 @@ public class EpsonThermalPrinter {
     }
     
     /**
-     * Test network connection
+     * ORIGINAL test methods - UNCHANGED
      */
     private boolean testNetworkConnection() {
         try (Socket socket = new Socket(ipAddress, port)) {
@@ -446,9 +466,6 @@ public class EpsonThermalPrinter {
         }
     }
     
-    /**
-     * Test USB connection
-     */
     private boolean testUSBConnection() {
         try {
             PrintService printService = findPrintService(printerName);
@@ -459,9 +476,6 @@ public class EpsonThermalPrinter {
         }
     }
     
-    /**
-     * Truncate string to specified length
-     */
     private String truncateString(String text, int maxLength) {
         if (text == null) return "";
         if (text.length() <= maxLength) return text;
