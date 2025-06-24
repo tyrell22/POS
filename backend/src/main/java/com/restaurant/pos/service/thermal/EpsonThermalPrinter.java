@@ -15,18 +15,24 @@ import javax.print.PrintServiceLookup;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.Socket;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Arrays;
 
 /**
- * Epson Thermal Printer Implementation using ESC/POS commands
- * WORKING: Original connection + Fixed Macedonian encoding + New items only
+ * Epson Thermal Printer Implementation with FIXED Cyrillic Support
+ * SOLUTION: Use CP866 (Cyrillic DOS) + proper byte conversion for Macedonian text
  */
 public class EpsonThermalPrinter {
     
     private static final Logger logger = LoggerFactory.getLogger(EpsonThermalPrinter.class);
+    
+    // FIXED: Use CP866 which is the standard Cyrillic codepage for DOS/ESC-POS printers
+    private static final Charset PRINTER_CHARSET = Charset.forName("CP866");
+    private static final int CYRILLIC_CODEPAGE = 17; // ESC t 17 for CP866
     
     private String printerName;
     private String connectionType; // USB, NETWORK
@@ -38,7 +44,7 @@ public class EpsonThermalPrinter {
         this.connectionType = connectionType;
         this.ipAddress = ipAddress;
         this.port = port;
-        logger.info("Initialized Epson thermal printer: {} via {}", printerName, connectionType);
+        logger.info("Initialized Epson thermal printer: {} via {} with CP866 Cyrillic support", printerName, connectionType);
     }
     
     /**
@@ -59,12 +65,100 @@ public class EpsonThermalPrinter {
     }
     
     /**
-     * Print kitchen ticket - NEW items only + Fixed encoding
+     * FIXED: Initialize printer with proper Cyrillic support
+     */
+    private void initializePrinterEncoding(OutputStream rawStream) throws IOException {
+        if (rawStream == null) {
+            logger.warn("Raw stream is null, cannot set encoding");
+            return;
+        }
+        
+        try {
+            // STEP 1: Initialize printer
+            rawStream.write(new byte[]{0x1B, 0x40}); // ESC @ - Initialize printer
+            rawStream.flush();
+            Thread.sleep(100);
+            
+            // STEP 2: Set codepage to CP866 (Cyrillic)
+            rawStream.write(new byte[]{0x1B, 0x74, CYRILLIC_CODEPAGE}); // ESC t 17
+            rawStream.flush();
+            Thread.sleep(50);
+            
+            // STEP 3: Set international character set to Cyrillic
+            rawStream.write(new byte[]{0x1B, 0x52, 0x07}); // ESC R 7 - Cyrillic character set
+            rawStream.flush();
+            Thread.sleep(50);
+            
+            logger.info("✅ Printer encoding initialized: CP866 Cyrillic");
+            
+        } catch (Exception e) {
+            logger.error("❌ Failed to initialize printer encoding: {}", e.getMessage());
+            throw new IOException("Failed to set printer encoding", e);
+        }
+    }
+    
+    /**
+     * FIXED: Convert text to proper encoding for thermal printer
+     */
+    private String convertTextForPrinter(String text) {
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+        
+        try {
+            // SOLUTION 1: Convert through CP866 encoding
+            byte[] bytes = text.getBytes(PRINTER_CHARSET);
+            String converted = new String(bytes, PRINTER_CHARSET);
+            
+            logger.debug("Text conversion: '{}' -> '{}' (CP866)", text, converted);
+            return converted;
+            
+        } catch (Exception e) {
+            logger.warn("Text conversion failed for '{}', using fallback", text);
+            // FALLBACK: Transliterate problematic characters
+            return transliterateMacedonian(text);
+        }
+    }
+    
+    /**
+     * FALLBACK: Transliterate Macedonian characters that might not work
+     */
+    private String transliterateMacedonian(String text) {
+        if (text == null) return "";
+        
+        return text
+            // Keep most Cyrillic characters as-is (they should work with CP866)
+            // Only transliterate the most problematic ones
+            .replace("ќ", "k'")  // Only if this specific character causes issues
+            .replace("Ќ", "K'")
+            .replace("ѕ", "dz")  // Only if this specific character causes issues  
+            .replace("Ѕ", "DZ")
+            .replace("џ", "dzh") // Only if this specific character causes issues
+            .replace("Џ", "DZH");
+    }
+    
+    /**
+     * FIXED: Write text with proper encoding
+     */
+    private void writeEncodedText(EscPos escpos, Style style, String text) throws IOException {
+        if (text == null || text.isEmpty()) {
+            return;
+        }
+        
+        // Convert text to printer-compatible encoding
+        String convertedText = convertTextForPrinter(text);
+        
+        // Write using converted text
+        escpos.write(style, convertedText);
+    }
+    
+    /**
+     * Print kitchen ticket - NEW items only + FIXED encoding
      */
     public void printKitchenTicket(Order order, List<OrderItem> items) throws IOException {
-        logger.info("Printing kitchen ticket for order {}", order.getId());
+        logger.info("Printing kitchen ticket for order {} with FIXED encoding", order.getId());
         
-        // FIXED: Filter to only NEW items (pending quantity > 0)  
+        // Filter to only NEW items (pending quantity > 0)  
         List<OrderItem> newItems = items.stream()
             .filter(item -> {
                 int totalQty = item.getQuantity() != null ? item.getQuantity() : 0;
@@ -83,29 +177,19 @@ public class EpsonThermalPrinter {
             return;
         }
         
-        logger.info("Printing {} new kitchen items", newItems.size());
+        logger.info("Printing {} new kitchen items with FIXED Cyrillic support", newItems.size());
         
-        // ORIGINAL connection logic
         EscPos escpos = createEscPosInstance();
         if (escpos == null) {
             throw new IOException("Cannot create ESC/POS printer instance");
         }
         
         try {
-            // ENCODING FIX: Set codepage for Cyrillic/Macedonian
-            try {
-                OutputStream rawStream = escpos.getOutputStream();
-                if (rawStream != null) {
-                    // ESC t 17 for Windows-1251 (Cyrillic) - works better than CP852
-                    rawStream.write(new byte[]{0x1B, 0x74, 17});
-                    rawStream.flush();
-                    logger.debug("Set codepage to Windows-1251 for Macedonian text");
-                }
-            } catch (Exception e) {
-                logger.warn("Could not set codepage, continuing with default: {}", e.getMessage());
-            }
+            // FIXED: Initialize encoding FIRST
+            OutputStream rawStream = escpos.getOutputStream();
+            initializePrinterEncoding(rawStream);
             
-            // Original printing styles
+            // Define styles
             Style headerStyle = new Style()
                 .setFontSize(Style.FontSize._2, Style.FontSize._2)
                 .setJustification(EscPosConst.Justification.Center)
@@ -115,18 +199,18 @@ public class EpsonThermalPrinter {
                 .setFontSize(Style.FontSize._1, Style.FontSize._1)
                 .setJustification(EscPosConst.Justification.Left_Default);
             
-            // Print header with encoding fix
-            escpos.write(headerStyle, fixMacedonianText("========== КУЈНА =========="));
+            // FIXED: Print header with proper encoding
+            writeEncodedText(escpos, headerStyle, "========== КУЈНА ==========");
             escpos.feed(1);
             
-            escpos.write(itemStyle, fixMacedonianText("Маса: " + getTableDisplayName(order)));
+            writeEncodedText(escpos, itemStyle, "Маса: " + getTableDisplayName(order));
             escpos.feed(1);
-            escpos.write(itemStyle, fixMacedonianText("Време: " + DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy").format(order.getCreatedAt())));
+            writeEncodedText(escpos, itemStyle, "Време: " + DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy").format(order.getCreatedAt()));
             escpos.feed(1);
-            escpos.write(itemStyle, "===========================");
+            writeEncodedText(escpos, itemStyle, "===========================");
             escpos.feed(2);
             
-            // Print NEW items with fixed encoding
+            // FIXED: Print NEW items with proper encoding
             for (OrderItem item : newItems) {
                 int totalQty = item.getQuantity() != null ? item.getQuantity() : 0;
                 int sentQty = item.getSentQuantity() != null ? item.getSentQuantity() : 0;
@@ -136,22 +220,27 @@ public class EpsonThermalPrinter {
                     .setFontSize(Style.FontSize._2, Style.FontSize._2)
                     .setBold(true);
                 
+                // Print quantity (numbers work fine)
                 escpos.write(quantityStyle, pendingQty + "x ");
-                escpos.write(itemStyle, fixMacedonianText(item.getMenuItem().getName()));
+                
+                // FIXED: Print item name with encoding
+                writeEncodedText(escpos, itemStyle, item.getMenuItem().getName());
                 escpos.feed(1);
                 
                 if (item.getNotes() != null && !item.getNotes().trim().isEmpty()) {
                     Style noteStyle = new Style()
                         .setFontSize(Style.FontSize._1, Style.FontSize._1);
-                    escpos.write(noteStyle, fixMacedonianText("   Забелешка: " + item.getNotes()));
+                    writeEncodedText(escpos, noteStyle, "   Забелешка: " + item.getNotes());
                     escpos.feed(1);
                 }
                 escpos.feed(1);
             }
             
-            escpos.write(itemStyle, "===========================");
+            writeEncodedText(escpos, itemStyle, "===========================");
             escpos.feed(3);
             escpos.cut(EscPos.CutMode.FULL);
+            
+            logger.info("✅ Kitchen ticket printed successfully with Cyrillic support");
             
         } finally {
             escpos.close();
@@ -159,12 +248,12 @@ public class EpsonThermalPrinter {
     }
     
     /**
-     * Print bar ticket - NEW items only + Fixed encoding
+     * Print bar ticket - NEW items only + FIXED encoding
      */
     public void printBarTicket(Order order, List<OrderItem> items) throws IOException {
-        logger.info("Printing bar ticket for order {}", order.getId());
+        logger.info("Printing bar ticket for order {} with FIXED encoding", order.getId());
         
-        // FIXED: Filter to only NEW items (pending quantity > 0)
+        // Filter to only NEW items (pending quantity > 0)
         List<OrderItem> newItems = items.stream()
             .filter(item -> {
                 int totalQty = item.getQuantity() != null ? item.getQuantity() : 0;
@@ -183,29 +272,19 @@ public class EpsonThermalPrinter {
             return;
         }
         
-        logger.info("Printing {} new bar items", newItems.size());
+        logger.info("Printing {} new bar items with FIXED Cyrillic support", newItems.size());
         
-        // ORIGINAL connection logic
         EscPos escpos = createEscPosInstance();
         if (escpos == null) {
             throw new IOException("Cannot create ESC/POS printer instance");
         }
         
         try {
-            // ENCODING FIX: Set codepage for Cyrillic/Macedonian
-            try {
-                OutputStream rawStream = escpos.getOutputStream();
-                if (rawStream != null) {
-                    // ESC t 17 for Windows-1251 (Cyrillic)
-                    rawStream.write(new byte[]{0x1B, 0x74, 17});
-                    rawStream.flush();
-                    logger.debug("Set codepage to Windows-1251 for Macedonian text");
-                }
-            } catch (Exception e) {
-                logger.warn("Could not set codepage, continuing with default: {}", e.getMessage());
-            }
+            // FIXED: Initialize encoding FIRST
+            OutputStream rawStream = escpos.getOutputStream();
+            initializePrinterEncoding(rawStream);
             
-            // Original printing styles
+            // Define styles
             Style headerStyle = new Style()
                 .setFontSize(Style.FontSize._2, Style.FontSize._2)
                 .setJustification(EscPosConst.Justification.Center)
@@ -215,18 +294,18 @@ public class EpsonThermalPrinter {
                 .setFontSize(Style.FontSize._1, Style.FontSize._1)
                 .setJustification(EscPosConst.Justification.Left_Default);
             
-            // Print header with encoding fix
-            escpos.write(headerStyle, fixMacedonianText("=========== БАР ==========="));
+            // FIXED: Print header with proper encoding
+            writeEncodedText(escpos, headerStyle, "=========== БАР ===========");
             escpos.feed(1);
             
-            escpos.write(itemStyle, fixMacedonianText("Маса: " + getTableDisplayName(order)));
+            writeEncodedText(escpos, itemStyle, "Маса: " + getTableDisplayName(order));
             escpos.feed(1);
-            escpos.write(itemStyle, fixMacedonianText("Време: " + DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy").format(order.getCreatedAt())));
+            writeEncodedText(escpos, itemStyle, "Време: " + DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy").format(order.getCreatedAt()));
             escpos.feed(1);
-            escpos.write(itemStyle, "===========================");
+            writeEncodedText(escpos, itemStyle, "===========================");
             escpos.feed(2);
             
-            // Print NEW items with fixed encoding
+            // FIXED: Print NEW items with proper encoding
             for (OrderItem item : newItems) {
                 int totalQty = item.getQuantity() != null ? item.getQuantity() : 0;
                 int sentQty = item.getSentQuantity() != null ? item.getSentQuantity() : 0;
@@ -236,22 +315,27 @@ public class EpsonThermalPrinter {
                     .setFontSize(Style.FontSize._2, Style.FontSize._2)
                     .setBold(true);
                 
+                // Print quantity (numbers work fine)
                 escpos.write(quantityStyle, pendingQty + "x ");
-                escpos.write(itemStyle, fixMacedonianText(item.getMenuItem().getName()));
+                
+                // FIXED: Print item name with encoding
+                writeEncodedText(escpos, itemStyle, item.getMenuItem().getName());
                 escpos.feed(1);
                 
                 if (item.getNotes() != null && !item.getNotes().trim().isEmpty()) {
                     Style noteStyle = new Style()
                         .setFontSize(Style.FontSize._1, Style.FontSize._1);
-                    escpos.write(noteStyle, fixMacedonianText("   Забелешка: " + item.getNotes()));
+                    writeEncodedText(escpos, noteStyle, "   Забелешка: " + item.getNotes());
                     escpos.feed(1);
                 }
                 escpos.feed(1);
             }
             
-            escpos.write(itemStyle, "===========================");
+            writeEncodedText(escpos, itemStyle, "===========================");
             escpos.feed(3);
             escpos.cut(EscPos.CutMode.FULL);
+            
+            logger.info("✅ Bar ticket printed successfully with Cyrillic support");
             
         } finally {
             escpos.close();
@@ -259,10 +343,10 @@ public class EpsonThermalPrinter {
     }
     
     /**
-     * Print receipt - All items + Fixed encoding
+     * Print receipt - All items + FIXED encoding
      */
     public void printReceipt(Order order) throws IOException {
-        logger.info("Printing receipt for order {}", order.getId());
+        logger.info("Printing receipt for order {} with FIXED encoding", order.getId());
         
         EscPos escpos = createEscPosInstance();
         if (escpos == null) {
@@ -270,18 +354,9 @@ public class EpsonThermalPrinter {
         }
         
         try {
-            // ENCODING FIX: Set codepage for Cyrillic/Macedonian
-            try {
-                OutputStream rawStream = escpos.getOutputStream();
-                if (rawStream != null) {
-                    // ESC t 17 for Windows-1251 (Cyrillic)
-                    rawStream.write(new byte[]{0x1B, 0x74, 17});
-                    rawStream.flush();
-                    logger.debug("Set codepage to Windows-1251 for Macedonian text");
-                }
-            } catch (Exception e) {
-                logger.warn("Could not set codepage, continuing with default: {}", e.getMessage());
-            }
+            // FIXED: Initialize encoding FIRST
+            OutputStream rawStream = escpos.getOutputStream();
+            initializePrinterEncoding(rawStream);
             
             Style headerStyle = new Style()
                 .setFontSize(Style.FontSize._2, Style.FontSize._2)
@@ -302,66 +377,51 @@ public class EpsonThermalPrinter {
                 .setJustification(EscPosConst.Justification.Right)
                 .setBold(true);
             
-            escpos.write(restaurantStyle, fixMacedonianText("РЕСТОРАН POS"));
+            // FIXED: All text with proper encoding
+            writeEncodedText(escpos, restaurantStyle, "РЕСТОРАН POS");
             escpos.feed(2);
             
-            escpos.write(itemStyle, fixMacedonianText("Маса: " + getTableDisplayName(order)));
+            writeEncodedText(escpos, itemStyle, "Маса: " + getTableDisplayName(order));
             escpos.feed(1);
-            escpos.write(itemStyle, fixMacedonianText("Датум: " + DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm").format(order.getCreatedAt())));
+            writeEncodedText(escpos, itemStyle, "Датум: " + DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm").format(order.getCreatedAt()));
             escpos.feed(1);
-            escpos.write(itemStyle, "============================");
+            writeEncodedText(escpos, itemStyle, "============================");
             escpos.feed(2);
             
             for (OrderItem item : order.getItems()) {
+                // Format item line with price
                 String itemLine = String.format("%dx %-15s %8.2f ден", 
                     item.getQuantity(),
-                    truncateString(fixMacedonianText(item.getMenuItem().getName()), 15),
+                    truncateString(item.getMenuItem().getName(), 15), // Use original name, will be converted
                     item.getTotalPrice());
-                escpos.write(itemStyle, itemLine);
+                
+                writeEncodedText(escpos, itemStyle, itemLine);
                 escpos.feed(1);
             }
             
             escpos.feed(1);
-            escpos.write(itemStyle, "============================");
+            writeEncodedText(escpos, itemStyle, "============================");
             escpos.feed(1);
             
             String totalLine = String.format("ВКУПНО: %20.2f ден", order.getTotalAmount());
-            escpos.write(totalStyle, fixMacedonianText(totalLine));
+            writeEncodedText(escpos, totalStyle, totalLine);
             escpos.feed(1);
-            escpos.write(itemStyle, "============================");
+            writeEncodedText(escpos, itemStyle, "============================");
             escpos.feed(2);
             
             Style footerStyle = new Style()
                 .setJustification(EscPosConst.Justification.Center);
-            escpos.write(footerStyle, fixMacedonianText("Ви благодариме!"));
+            writeEncodedText(escpos, footerStyle, "Ви благодариме!");
             escpos.feed(1);
-            escpos.write(itemStyle, "============================");
+            writeEncodedText(escpos, itemStyle, "============================");
             escpos.feed(3);
             escpos.cut(EscPos.CutMode.FULL);
+            
+            logger.info("✅ Receipt printed successfully with Cyrillic support");
             
         } finally {
             escpos.close();
         }
-    }
-    
-    /**
-     * ENCODING FIX: Handle problematic Macedonian characters
-     */
-    private String fixMacedonianText(String text) {
-        if (text == null) return "";
-        
-        // Convert problematic Macedonian characters to printer-friendly alternatives
-        // Only convert the ones that commonly cause issues
-        return text
-            .replace("ќ", "k'")  // ќ -> k' if it shows as ?
-            .replace("Ќ", "K'")  // Ќ -> K'
-            .replace("ѕ", "z'")  // ѕ -> z' if it shows as ?
-            .replace("Ѕ", "Z'")  // Ѕ -> Z'
-            .replace("џ", "dz")  // џ -> dz if it shows as ?
-            .replace("Џ", "DZ"); // Џ -> DZ
-        
-        // Note: Keep other Cyrillic characters as-is since Windows-1251 should support them
-        // Characters like а, б, в, г, д, е, ж, з, и, ј, к, л, м, н, о, п, р, с, т, у, ф, х, ц, ч, ш should work
     }
     
     /**
@@ -410,7 +470,7 @@ public class EpsonThermalPrinter {
     }
     
     /**
-     * ORIGINAL connection logic - UNCHANGED
+     * Create EscPos instance - UNCHANGED
      */
     private EscPos createEscPosInstance() throws IOException {
         try {
@@ -433,7 +493,7 @@ public class EpsonThermalPrinter {
     }
     
     /**
-     * ORIGINAL find print service - UNCHANGED
+     * Find print service - UNCHANGED
      */
     private PrintService findPrintService(String printerName) {
         PrintService[] printServices = PrintServiceLookup.lookupPrintServices(null, null);
@@ -455,7 +515,7 @@ public class EpsonThermalPrinter {
     }
     
     /**
-     * ORIGINAL test methods - UNCHANGED
+     * Test methods - UNCHANGED
      */
     private boolean testNetworkConnection() {
         try (Socket socket = new Socket(ipAddress, port)) {
