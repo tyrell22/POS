@@ -69,8 +69,28 @@ export const menuAPI = {
     // Toggle item availability
     toggleAvailability: (id) => api.patch(`/menu-items/${id}/toggle-availability`),
 
-    // Search menu items
-    search: (query) => api.get(`/menu-items/search?q=${encodeURIComponent(query)}`),
+    // ENHANCED: Search menu items with better error handling
+    search: async (query) => {
+        try {
+            if (!query || query.trim().length === 0) {
+                return { data: [] };
+            }
+
+            // Encode the query parameter properly
+            const encodedQuery = encodeURIComponent(query.trim());
+            const response = await api.get(`/menu-items/search?q=${encodedQuery}`);
+
+            // Ensure we always return an array
+            return {
+                ...response,
+                data: Array.isArray(response.data) ? response.data : []
+            };
+        } catch (error) {
+            console.error('Search error:', error);
+            // Return empty results on error to prevent UI breaks
+            return { data: [] };
+        }
+    },
 };
 
 // Orders API
@@ -114,7 +134,7 @@ export const orderAPI = {
     // Close order with thermal printer (default)
     close: (orderId) => api.post(`/orders/${orderId}/close`),
 
-    // NEW: Close order with fiscal printer
+    // Close order with fiscal printer
     closeFiscal: (orderId) => api.post(`/orders/${orderId}/close-fiscal`),
 };
 
@@ -220,7 +240,7 @@ export const adminAPI = {
     login: (adminCode) => api.post('/admin/login', { adminCode }),
 };
 
-// NEW: Printer API
+// Printer API
 export const printerAPI = {
     // Get printer configuration
     getConfig: (adminCode) => api.get('/printer/config', {
@@ -323,7 +343,7 @@ export const apiUtils = {
     // Validate table number
     isValidTableNumber: (tableNumber) => {
         const num = parseInt(tableNumber);
-        return num >= 1 && num <= 100; // Increased limit for more tables
+        return num >= 1 && num <= 9999; // Extended for takeout orders
     },
 
     // Check if API is available
@@ -367,6 +387,42 @@ export const apiUtils = {
             'NON_SMOKING': '#14B8A6'
         };
         return colors[type] || '#3B82F6';
+    },
+
+    // NEW: Validate search query
+    isValidSearchQuery: (query) => {
+        if (!query || typeof query !== 'string') {
+            return false;
+        }
+
+        const trimmed = query.trim();
+        return trimmed.length >= 2 && trimmed.length <= 100;
+    },
+
+    // NEW: Sanitize search query
+    sanitizeSearchQuery: (query) => {
+        if (!query || typeof query !== 'string') {
+            return '';
+        }
+
+        // Remove potentially dangerous characters but keep Macedonian characters
+        return query
+            .trim()
+            .replace(/[<>'"]/g, '') // Remove HTML/injection characters
+            .substring(0, 100); // Limit length
+    },
+
+    // NEW: Debounced search helper
+    debounce: (func, wait) => {
+        let timeout;
+        return function executedFunction(...args) {
+            const later = () => {
+                clearTimeout(timeout);
+                func(...args);
+            };
+            clearTimeout(timeout);
+            timeout = setTimeout(later, wait);
+        };
     }
 };
 
