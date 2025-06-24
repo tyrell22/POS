@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
-import { ShoppingCart, Plus, Minus, Trash2, Send, X, Settings, Home, Utensils, Coffee, Wine, Cake, Grid, Shield, Printer } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { ShoppingCart, Plus, Minus, Trash2, Send, X, Settings, Home, Utensils, Coffee, Wine, Cake, Grid, Shield, Printer, Search, XCircle } from 'lucide-react';
 import { menuAPI, orderAPI, adminAPI, floorPlanAPI } from '../services/api';
 import SimplifiedFloorPlanManager from './FloorPlanManager';
 import AdminProductForm from './AdminProductForm';
 import PrinterSetup from './PrinterSetup';
+import SearchBar from './SearchBar';
 
 // Categories configuration
 const categories = {
@@ -39,8 +40,11 @@ const RestaurantPOS = () => {
     const [showMoveOrderModal, setShowMoveOrderModal] = useState(false);
     const [orderToMove, setOrderToMove] = useState(null);
 
-    // NEW: F-key tracking for fiscal receipt
+    // F-key tracking for fiscal receipt
     const [isKeyFPressed, setIsKeyFPressed] = useState(false);
+
+    // NEW: Search functionality state - FIXED: Initialize with null
+    const [searchResults, setSearchResults] = useState(null); // null = no search, [] = empty results
 
     // Load data on component mount AND when returning from admin
     useEffect(() => {
@@ -49,7 +53,7 @@ const RestaurantPOS = () => {
         loadFloorPlan();
     }, []);
 
-    // NEW: Add keyboard event listeners for F-key detection
+    // Add keyboard event listeners for F-key detection
     useEffect(() => {
         const handleKeyDown = (event) => {
             if (event.key === 'F' || event.key === 'f') {
@@ -79,6 +83,26 @@ const RestaurantPOS = () => {
             loadFloorPlan();
         }
     }, [currentView]);
+
+    // NEW: Search functionality callbacks - FIXED: Stable references
+    const handleSearchResults = useCallback((results) => {
+        setSearchResults(results);
+    }, []); // Empty dependency array to ensure stable reference
+
+    // NEW: Memoized get display items function - FIXED: Null check for search state
+    const getDisplayItems = useMemo(() => {
+        // If searchResults is null, it means no search is active
+        if (searchResults !== null) {
+            return searchResults; // Return search results (could be empty array)
+        }
+
+        // No search active, show filtered menu items
+        if (selectedCategory === 'all') {
+            return menuItems.filter(item => item.available);
+        }
+
+        return menuItems.filter(item => item.category === selectedCategory && item.available);
+    }, [searchResults, selectedCategory, menuItems]);
 
     const loadFloorPlan = async () => {
         try {
@@ -211,6 +235,17 @@ const RestaurantPOS = () => {
         return Object.entries(orders)
             .filter(([key]) => key.startsWith('TAKEOUT-'))
             .map(([key, order]) => ({ key, order }));
+    };
+
+    // Helper function to check if order has any pending (unsent) items
+    const hasPendingItems = (order) => {
+        if (!order || !order.items) return false;
+
+        return order.items.some(item => {
+            const sentQty = item.sentQuantity || 0;
+            const totalQty = item.quantity || 0;
+            return totalQty > sentQty; // Has unsent quantity
+        });
     };
 
     // Helper function to check if an item has sent quantity
@@ -424,8 +459,6 @@ const RestaurantPOS = () => {
         return allTables;
     };
 
-    // Add this component to RestaurantPOS.js
-
     // Move Order Modal Component
     const MoveOrderModal = ({ isOpen, onClose, order, onMove, availableTables }) => {
         const [selectedTable, setSelectedTable] = useState('');
@@ -487,8 +520,8 @@ const RestaurantPOS = () => {
                             <button
                                 onClick={() => setSelectedTable('1001')}
                                 className={`p-2 text-sm rounded border ${selectedTable === '1001'
-                                        ? 'bg-orange-100 border-orange-500 text-orange-700'
-                                        : 'bg-gray-50 border-gray-300 hover:bg-gray-100'
+                                    ? 'bg-orange-100 border-orange-500 text-orange-700'
+                                    : 'bg-gray-50 border-gray-300 hover:bg-gray-100'
                                     }`}
                                 disabled={loading}
                             >
@@ -501,8 +534,8 @@ const RestaurantPOS = () => {
                                     key={table.tableNumber}
                                     onClick={() => setSelectedTable(table.tableNumber.toString())}
                                     className={`p-2 text-sm rounded border ${selectedTable === table.tableNumber.toString()
-                                            ? 'bg-blue-100 border-blue-500 text-blue-700'
-                                            : 'bg-gray-50 border-gray-300 hover:bg-gray-100'
+                                        ? 'bg-blue-100 border-blue-500 text-blue-700'
+                                        : 'bg-gray-50 border-gray-300 hover:bg-gray-100'
                                         }`}
                                     disabled={loading}
                                 >
@@ -605,15 +638,22 @@ const RestaurantPOS = () => {
                 return;
             }
 
-            if (currentOrder.status === 'ИСПРАТЕНА') {
-                setError('Оваа нарачка е веќе испратена');
+            // Check if there are any unsent items regardless of order status
+            const hasUnsentItems = currentOrder.items.some(item => {
+                const pendingQty = getPendingQuantity(item);
+                return pendingQty > 0;
+            });
+
+            if (!hasUnsentItems) {
+                setError('Нема нови производи за испраќање');
                 return;
             }
 
             console.log('Sending order:', currentOrder.id);
 
-            await orderAPI.send(currentOrder.id);
+            const response = await orderAPI.send(currentOrder.id);
 
+            // Update the order status to SENT
             setOrders(prev => ({
                 ...prev,
                 [selectedTable]: {
@@ -622,14 +662,36 @@ const RestaurantPOS = () => {
                 }
             }));
 
-            alert('Нарачката е испратена во кујна/бар!');
-            setCurrentView('tables');
+            // Reload the order to get updated sentQuantity values
+            if (selectedTable) {
+                const tableNumber = typeof selectedTable === 'string' && selectedTable.startsWith('TAKEOUT-')
+                    ? parseInt(selectedTable.split('-')[1])
+                    : selectedTable;
+                await loadOrderForTable(tableNumber);
+            }
+
+            // Show appropriate success message
+            const hasMorePendingItems = currentOrder.items.some(item => {
+                const totalQty = item.quantity || 0;
+                const sentQty = (item.sentQuantity || 0) + (getPendingQuantity(item) || 0);
+                return totalQty > sentQty;
+            });
+
+            const message = hasMorePendingItems
+                ? 'Новите производи се испратени во кујна/бар!'
+                : 'Нарачката е испратена во кујна/бар!';
+
+            alert(message);
 
         } catch (err) {
             console.error('Error sending order:', err);
 
+            // Handle specific backend error messages
             if (err.response?.data?.message) {
+                // The backend is already providing localized error messages
                 setError(err.response.data.message);
+            } else if (err.message?.includes('Нема нечитано')) {
+                setError('Нема нови производи за испраќање');
             } else {
                 setError('Грешка при испраќање на нарачката');
             }
@@ -755,11 +817,6 @@ const RestaurantPOS = () => {
             console.error('Error toggling availability:', err);
         }
     };
-
-    // Filter menu items by category
-    const filteredMenuItems = selectedCategory === 'all'
-        ? menuItems.filter(item => item.available)
-        : menuItems.filter(item => item.category === selectedCategory && item.available);
 
     // Get table status with order info
     const getTableStatus = (tableNumber) => {
@@ -1068,7 +1125,7 @@ const RestaurantPOS = () => {
                             })}
                         </div>
                     )}
-                </div> 
+                </div>
             </div>
         );
     };
@@ -1077,6 +1134,9 @@ const RestaurantPOS = () => {
         const currentOrder = getCurrentOrder();
         const takeoutOrderNumber = isTakeoutOrder() ? selectedTable.split('-')[1] - 1000 + 1 : null;
         const isInvalidTableNumber = !isTakeoutOrder() && (selectedTable < 1 || selectedTable > 100);
+
+        // Get items to display
+        const displayItems = getDisplayItems;
 
         return (
             <div className="flex h-screen">
@@ -1119,7 +1179,12 @@ const RestaurantPOS = () => {
                         <div className="mb-4 p-4 bg-orange-100 border border-orange-400 text-orange-700 rounded">
                             <strong>⚠️ Оваа нарачка е веќе испратена!</strong>
                             <br />
-                            <small>Веќе испратените производи не можат да се менуваат. Новите производи ќе бидат додадени во истата нарачка.</small>
+                            <small>
+                                {hasPendingItems(currentOrder)
+                                    ? "Има нови производи кои треба да се испратат. Веќе испратените производи не можат да се менуваат."
+                                    : "Веќе испратените производи не можат да се менуваат. Новите производи ќе бидат додадени во истата нарачка."
+                                }
+                            </small>
                         </div>
                     )}
 
@@ -1132,37 +1197,44 @@ const RestaurantPOS = () => {
                         </div>
                     )}
 
-                    {/* Category Filter */}
-                    <div className="flex gap-2 mb-6 flex-wrap">
-                        <button
-                            onClick={() => setSelectedCategory('all')}
-                            className={`px-4 py-2 rounded-lg transition-colors ${selectedCategory === 'all' ? 'bg-blue-500 text-white' : 'bg-gray-200 hover:bg-gray-300'
-                                }`}
-                        >
-                            Сите
-                        </button>
-                        {Object.entries(categories).map(([key, category]) => {
-                            const Icon = category.icon;
-                            return (
-                                <button
-                                    key={key}
-                                    onClick={() => setSelectedCategory(key)}
-                                    className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${selectedCategory === key ? `${category.color} text-white` : 'bg-gray-200 hover:bg-gray-300'
-                                        }`}
-                                >
-                                    <Icon size={16} />
-                                    {category.name}
-                                </button>
-                            );
-                        })}
-                    </div>
+                    {/* NEW: Search Bar Component */}
+                    <SearchBar
+                        onSearchResults={handleSearchResults}
+                    />
+
+                    {/* Category Filter - Only show when not searching */}
+                    {searchResults === null && (
+                        <div className="flex gap-2 mb-6 flex-wrap">
+                            <button
+                                onClick={() => setSelectedCategory('all')}
+                                className={`px-4 py-2 rounded-lg transition-colors ${selectedCategory === 'all' ? 'bg-blue-500 text-white' : 'bg-gray-200 hover:bg-gray-300'
+                                    }`}
+                            >
+                                Сите
+                            </button>
+                            {Object.entries(categories).map(([key, category]) => {
+                                const Icon = category.icon;
+                                return (
+                                    <button
+                                        key={key}
+                                        onClick={() => setSelectedCategory(key)}
+                                        className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${selectedCategory === key ? `${category.color} text-white` : 'bg-gray-200 hover:bg-gray-300'
+                                            }`}
+                                    >
+                                        <Icon size={16} />
+                                        {category.name}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    )}
 
                     {/* Menu Items Grid */}
                     {loading ? (
                         <div className="text-center py-8">Се вчитува...</div>
                     ) : (
                         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                            {filteredMenuItems.map(item => {
+                            {displayItems.map(item => {
                                 const category = categories[item.category];
                                 const Icon = category.icon;
 
@@ -1194,9 +1266,18 @@ const RestaurantPOS = () => {
                             })}
                         </div>
                     )}
+
+                    {/* Empty search results */}
+                    {searchResults !== null && Array.isArray(searchResults) && searchResults.length === 0 && (
+                        <div className="text-center py-12 text-gray-500">
+                            <Search size={64} className="mx-auto mb-4 opacity-50" />
+                            <p className="text-xl mb-2">Нема резултати</p>
+                            <p>Обидете се со различни зборови за пребарување</p>
+                        </div>
+                    )}
                 </div>
 
-                {/* Enhanced Order Summary */}
+                {/* Enhanced Order Summary - Same as before */}
                 <div className="w-96 bg-white shadow-lg p-6 overflow-y-auto">
                     <div className="flex items-center gap-2 mb-6">
                         <ShoppingCart size={24} />
@@ -1354,17 +1435,28 @@ const RestaurantPOS = () => {
 
                             {currentOrder.status === 'ИСПРАТЕНА' && (
                                 <div className="space-y-2">
-                                    <div className="w-full flex items-center justify-center gap-2 bg-orange-100 text-orange-700 py-3 px-4 rounded-lg font-medium">
-                                        ✅ Нарачката е испратена
-                                    </div>
+                                    {/* Show send button if there are pending items */}
+                                    {hasPendingItems(currentOrder) ? (
+                                        <button
+                                            onClick={sendOrder}
+                                            className="w-full flex items-center justify-center gap-2 bg-green-500 text-white py-3 px-4 rounded-lg hover:bg-green-600 transition-colors font-medium"
+                                        >
+                                            <Send size={20} />
+                                            Испрати Нови Производи
+                                        </button>
+                                    ) : (
+                                        <div className="w-full flex items-center justify-center gap-2 bg-orange-100 text-orange-700 py-3 px-4 rounded-lg font-medium">
+                                            ✅ Сите производи се испратени
+                                        </div>
+                                    )}
 
                                     {/* Close Button with F-key Instructions */}
                                     <div className="relative">
                                         <button
                                             onClick={() => closeOrder(selectedTable)}
                                             className={`w-full flex items-center justify-center gap-2 py-3 px-4 rounded-lg transition-colors font-medium ${isKeyFPressed
-                                                    ? 'bg-purple-500 hover:bg-purple-600 text-white'
-                                                    : 'bg-blue-500 hover:bg-blue-600 text-white'
+                                                ? 'bg-purple-500 hover:bg-purple-600 text-white'
+                                                : 'bg-blue-500 hover:bg-blue-600 text-white'
                                                 }`}
                                         >
                                             <Printer size={20} />
